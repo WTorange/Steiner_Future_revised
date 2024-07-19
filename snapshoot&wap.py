@@ -2,6 +2,8 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
 import pandas as pd
+pd.options.mode.chained_assignment = None
+
 import numpy as np
 from datetime import datetime
 import re
@@ -16,15 +18,7 @@ from quote_wash import DataProcessor
 
 # 思路
 def get_logger_snapshoot(name, debug=False):
-    """
-    初始化一个日志记录器。
 
-    参数:
-    - name (str): 日志记录器的名称。
-
-    返回:
-    - logger (logging.Logger): 配置好的日志记录器。
-    """
     logger = logging.getLogger(name)
     if not logger.handlers:
         logger.setLevel(logging.DEBUG if debug else logging.INFO)
@@ -37,36 +31,9 @@ def get_logger_snapshoot(name, debug=False):
 
 
 class get_snapshoot(ApiClient):
-    """
-    从ApiClient类继承，用于获取期货品种快照的类。
 
-    参数:
-    - contract (str): 期货品种索引。
-    - time (str): 查询的时间，格式为 'YYYY-MM-DD HH:MM:SS'。
-
-    步骤：
-    1. 根据期货的合约名称确定期货种类和交易所，在main_contract文件夹中查找到对应品种的主力合约和日期，calendar.csv表格查找到交易所对应的交易所开盘日期。
-    2. 修正.CZC 的期货合约代码，根据输入的时刻和对应的交易所开盘日期在数据库中查找quote数据。
-    3. 选择根据quote数据的字段，对time和date字段缺失情况进行补足
-    4. 使用quote_wash程序进行数据清洗
-    4.1. 根据期货品种在future_information.csv文件中查找对应的开盘时间，删除开盘时间外的数据。
-    4.2. 在开盘时间内以0.5s为间隔重采样，方法为pad(ffill)，生成每0.5s的快照数据，新建一列resample_time，为快照数据的时刻。其余数据得到保留
-    5. 日盘和夜盘进行分隔，计算要求的高开低收, volume, amount等，向前查找last_prc。
-    6. 最后输出对应时刻的快照数据
-
-    """
 
     def __init__(self, api_client, contract: str, time: str):
-        """
-       初始化get_snapshoot类。
-
-       参数:
-       - contract (str): 期货品种索引。
-       - time (str): 查询的时间，格式为 'YYYY-MM-DD HH:MM:SS'。
-       """
-        # super().__init__("zlt_read", "zlt_read", "./config/api.json", get_logger(name="ApiClientLog", debug=False))
-        # if not self.init():
-        #     raise Exception("初始化失败")
 
         self.api_client = api_client
         self.contract = contract
@@ -81,29 +48,12 @@ class get_snapshoot(ApiClient):
         self.opening_hours_df = pd.read_csv('future_information.csv')
 
     def extract_contract(self, contract):
-        """
-        提取合约开头的一个或两个大写字母。
 
-        参数:
-        - contract (str): 期货品种索引。
-
-        返回:
-        - match (str): 合约开头的大写字母。
-        """
         match = re.match(r'^([A-Z]{1,2})', contract)
         return match.group(1) if match else contract
 
     def correct_czc_code(self, contract, query_date):
-        """
-        修正.CZC结尾的期货合约代码。
 
-        参数:
-        - future_code (str): 期货合约代码。
-        - query_date (str): 查询的时间，格式为 'YYYY-MM-DD HH:MM:SS'。
-
-        返回:
-        - corrected_code (str): 修正后的期货合约代码。
-        """
         if contract.endswith('.CZC'):
             # 提取期货代码中的字母和数字部分
             match = re.match(r'^([A-Z]+)(\d+)\.CZC$', contract)
@@ -125,26 +75,11 @@ class get_snapshoot(ApiClient):
         return contract
 
     def get_quote_data(self):
-        """
-        根据输入的时间获取相应的期货品种数据。
 
-        返回:
-        - day_quote (DataFrame): 包含期货品种数据的DataFrame。
-        """
-
-        # 根据输入的时间time，取yyyy-mm-dd，命名为day_time.
         entries = [self.contract]
         entry_type = 'quote'
 
-        # 获取期货的大写字母代码
         future_code = self.extract_contract(self.contract)
-
-        # todo 如需获取期货品种信息
-        # future_details = self.future_info[self.future_info['code'] == future_code]
-        # if future_details.empty:
-        #     raise Exception("未找到期货品种信息")
-        # 判断是否有夜盘
-        # has_night_session = future_details.iloc[0]['daynight'] == 1
 
 
         query_datetime = datetime.strptime(self.time, '%Y-%m-%d %H:%M:%S')
@@ -228,36 +163,109 @@ class get_snapshoot(ApiClient):
         day_quote['date'] = day_quote['date'].astype(str)
         day_quote['trading_date'] = day_quote['trading_date'].astype(str)
 
-        # 转换时间格式并增加'daynight'列
-
-        # def convert_time(row):
-        #     time_str =  str(row['time']).split('.')[0]
-        #     time_obj = datetime.strptime(time_str, '%H%M%S%f')
-        #     if datetime.strptime("080000000000", '%H%M%S%f') <= time_obj <= datetime.strptime(
-        #             "200000000000", '%H%M%S%f'):
-        #         return "day"
-        #     else:
-        #         return "night"
-        #
-        # day_quote['daynight'] = day_quote.apply(convert_time, axis=1)
         return day_quote
 
+    def wap( day_quote, contract, start_datetime_str, *lengths):
+        """
+        计算指定时间段内的时间加权平均价格（TWAP）和成交量加权平均价格（VWAP）。
+
+        :param date: 日期（格式：YYYY-MM-DD）
+        :param start_time: 开始时间（格式：HHMMSSfff）
+        :param lengths: 时间长度（格式：HH:MM:SS:SSS）
+
+        :return: 包含 TWAP 和 VWAP 的 DataFrame
+        """
+        # print(day_quote)
+        # print(date)
+        # print(start_time)
+        result = pd.DataFrame(columns=['contract', 'date', 'start_time'])
+        #
+        # start_datetime = datetime.strptime(start_datetime_str, '%Y-%m-%d %H:%M:%S')
+        start_datetime = start_datetime_str
+        date = start_datetime.strftime('%Y-%m-%d')
+
+        #
+        # start_time_str = start_time[:2] + ':' + start_time[2:4] + ':' + start_time[4:6] + '.' + start_time[6:]
+        #
+        # start_datetime_str = f"{date} {start_time_str}"
+        # print(start_datetime_str)
+        # start_datetime = datetime.strptime(start_datetime_str, '%Y%m%d %H:%M:%S.%f')
+        day_quote['resample_time'] = pd.to_datetime(day_quote['resample_time'])
+        for length in lengths:
+            # 解析长度
+            if length.startswith('-'):
+                is_backward = True
+                length = length[1:]
+            else:
+                is_backward = False
+
+            hours, minutes, seconds, milliseconds = map(int, length.split(':'))
+            length_delta = timedelta(hours=hours, minutes=minutes, seconds=seconds, milliseconds=milliseconds)
+
+            length_desc_parts = []
+            if hours > 0:
+                length_desc_parts.append(f"{hours}h")
+            if minutes > 0 or hours > 0:
+                length_desc_parts.append(f"{minutes}m")
+            if seconds > 0 and ( minutes > 0 or hours > 0):
+                length_desc_parts.append(f"{seconds}s")
+            if milliseconds > 0 and ( seconds > 0 or minutes > 0 or hours > 0):
+                length_desc_parts.append(f"{milliseconds}f")
+            length_desc = ''.join(length_desc_parts)
+            # length_desc = f"{hours}h{minutes}m{seconds}s{milliseconds}f"
+
+
+            # current_date = start_date
+
+            if is_backward:
+                end_datetime = start_datetime - length_delta
+            else:
+                end_datetime = start_datetime + length_delta
+
+            maskdate = day_quote['date'] == date
+
+            masktime = (day_quote['resample_time'] >= min(start_datetime,end_datetime)) & (day_quote['resample_time'] <= max(start_datetime,end_datetime))
+            df_period = day_quote[maskdate & masktime]
+
+            df_period['middle_price'] = np.where(
+                (df_period['ask_prc1'] != 0) & (df_period['bid_prc1'] != 0),
+                (df_period['ask_prc1'] + df_period['bid_prc1']) / 2,
+                0
+            )
+            if df_period.empty:
+                print( f"无数据， date={date}, start_time={start_datetime}")
+
+                return None
+
+            if not df_period.empty:
+                # 计算 VWAP 时需要考虑成交量的差值
+                df_period['volume_diff'] = df_period['volume'].diff().fillna(df_period['volume'])
+
+                twap = df_period['middle_price'].mean()
+                if df_period['volume_diff'].sum() != 0 and not np.isnan(df_period['volume_diff'].sum()):
+                    vwap = np.dot(df_period['middle_price'], df_period['volume_diff']) / df_period['volume_diff'].sum()
+                else:
+                    vwap = df_period['middle_price'].iloc[0]
+
+                # 创建临时行并且添加结果
+                # temp_row = pd.Series({'date': date,
+                #                       'start_time': start_datetime.strftime('%H%M%S%f'),
+                #                       'datetime': start_datetime,
+                #                       f'{length_desc}_twap_{"pre_" if is_backward else "post_"}prc': twap,
+                #                       f'{length_desc}_vwap_{"pre_" if is_backward else "post_"}prc': vwap})
+                result.at[0, 'contract'] = contract
+                result.at[0, 'date'] = date
+                result.at[0, 'start_time'] = str(start_datetime)
+                result.at[0, 'datetime'] = start_datetime
+                result[f'{length_desc}_twap_{"pre_" if is_backward else "post_"}prc'] = twap
+                result[f'{length_desc}_vwap_{"pre_" if is_backward else "post_"}prc'] = vwap
+
+        return result
     def certain_snapshoot(self, df, time):
-        """
-        根据特定时间获取期货品种的快照数据。
 
-        参数:
-        - df (DataFrame): 包含期货品种数据的DataFrame。
-        - time (str): 查询的时间，格式为 'YYYY-MM-DD HH:MM:SS'。
-
-        返回:
-        - result_df (DataFrame): 包含特定时间快照数据的DataFrame。
-        """
-        # 将传入的时间字符串转换为datetime对象
         query_time = datetime.strptime(time, '%Y-%m-%d %H:%M:%S')
 
 
-        # 确保时间字符串是9位，包括毫秒
         df['time'] = df['time'].apply(lambda x: str(x).zfill(9))
         df['date'] = df['datetime'].dt.strftime('%Y%m%d')
 
@@ -288,26 +296,10 @@ class get_snapshoot(ApiClient):
             else:
                 null_value = 0
 
-            # if last_tick['datetime'].date() != query_date:
-            #     null_value = 1
-            # else:
-            #     null_value = 0
-
         # 当天数据不存在，按要求输出数据
         if null_value == 1:
             high = low = open_price = prev_close = last_tick['last_prc']
             ask = bid = volume = amount = 0
-
-        # todo daynight也可以加在这里，或许增加兼容性以及提高速度
-        # def convert_time(row):
-        #     time_str = row['time']
-        #     time_obj = datetime.strptime(time_str, '%H%M%S%f')
-        #     if datetime.strptime("080000000000", '%H%M%S%f') <= time_obj <= datetime.strptime(
-        #             "200000000000", '%H%M%S%f'):
-        #         return "day"
-        #     else:
-        #         return "night"
-
 
         def is_day_time(time_str):
             time_obj = datetime.strptime(time_str.split('.')[0], '%H%M%S%f')
@@ -443,8 +435,9 @@ class get_snapshoot(ApiClient):
 if __name__ == '__main__':
 
     # 指定你的存放主力合约的文件夹
-    maincontract_folder = "/nas92/temporary/Steiner/data_wash/linux_so/py311/maincontract/"
-    results_folder = "/nas92/temporary/Steiner/data_wash/linux_so/py311/results/"
+    maincontract_folder = "/nas92/temporary/Steiner/data_wash/linux_so/py311/maincontract11/"
+    snapshoot_results_folder = "/nas92/temporary/Steiner/data_wash/linux_so/py311/results/"
+    wap_results_folder = "/nas92/temporary/Steiner/data_wash/linux_so/py311/wap_results/"
 
     calendar = pd.read_csv('calendar.csv').rename(
         columns={'TRADE_DAYS': 'trade_days', 'S_INFO_EXCHMARKET': 'exchmarket'})
@@ -461,10 +454,9 @@ if __name__ == '__main__':
             contracts_df = pd.read_csv(file_path)
         print(file_name)
 
-        # todo 方便测试该品种是否能顺利运行
-        # contracts_df = pd.read_csv(
-        #     "/nas92/temporary/Steiner/data_wash/linux_so/py311/maincontract/AP_20091201_20240628.csv")
-        results = []
+        wap_results = []
+        snapshoot_results = []
+
         exchange = contracts_df['contract'][0].split('.')[-1][:2]
 
         reversed_contracts_df = contracts_df.iloc[::-1]
@@ -508,89 +500,33 @@ if __name__ == '__main__':
                 # print(quote_data)
                 if quote_data is None:
                     continue
+                lengths = ['-00:01:00:000', '-00:03:00:000', '-00:05:00:000', '00:01:00:000', '00:03:00:000',
+                           '00:05:00:000']
+                wap_result = get_snapshoot.wap(quote_data, contract, datetime.strptime(query_time, '%Y-%m-%d %H:%M:%S'), *lengths)
 
-                result = snapshoot.certain_snapshoot(quote_data, query_time)
-
-                results.append(result)
+                snapshoot_result = snapshoot.certain_snapshoot(quote_data, query_time)
+                wap_results.append(wap_result)
+                snapshoot_results.append(snapshoot_result)
                 query_counter += 1
                 if query_counter % 100 == 0:
-                    if results:
-                        combined_results = pd.concat(results, ignore_index=True)
-                        sorted_results = combined_results.sort_values(by=['query_time']).reset_index(drop=True)
-                        output_file = os.path.join(results_folder, f"{os.path.splitext(file_name)[0]}_results.csv")
-                        sorted_results.to_csv(output_file, index=False)
-        if results:
-            combined_results = pd.concat(results, ignore_index=True)
-            sorted_results = combined_results.sort_values(by=['query_time']).reset_index(drop=True)
-            output_file = os.path.join(results_folder, f"{os.path.splitext(file_name)[0]}_results.csv")
-            sorted_results.to_csv(output_file, index=False)
-
-# todo 暂时先保留，后续参考修改
-# 以下是多线程 & 多进程的尝试，效果不佳
-# from concurrent.futures import ThreadPoolExecutor, as_completed
-#
-# # 定义 process_contract 函数
-# def process_contract(row):
-#     contract = row['contract']
-#     start_date = pd.to_datetime(str(row['start'])).date()
-#     end_date = pd.to_datetime(str(row['end'])).date()
-#
-#     # 筛选出在日期区间内的交易日期
-#     exchange_rows = calendar[calendar['exchmarket'].str.startswith(exchange)].copy()
-#     exchange_rows['trade_days'] = pd.to_datetime(exchange_rows['trade_days'], format='%Y%m%d').dt.date
-#     # exchange_rows['trade_days'] = pd.to_datetime(exchange_rows['trade_days']).dt.date
-#
-#     # print('1',type(exchange_rows['trade_days']),'2',type(pd.to_datetime('20240615').date()),'3',type(start_date))
-#
-#     filtered_calendar = exchange_rows[(exchange_rows['trade_days'] >= pd.to_datetime('20201130').date()) &  # 指定日期之后的条件
-#                                       (exchange_rows['trade_days'] >= start_date) &
-#                                       (exchange_rows['trade_days'] <= end_date)]
-#     reversed_filtered_calendar = filtered_calendar.iloc[::-1]
-#
-#     # 生成查询的日期时间列表
-#     date_time_list = []
-#     for trade_day in reversed_filtered_calendar['trade_days']:
-#         trade_day_str = pd.to_datetime(str(trade_day)).strftime('%Y-%m-%d')
-#         date_time_list.append(pd.to_datetime(str(trade_day)).strftime('%Y-%m-%d') + ' 14:30:00')
-#         date_time_list.append(pd.to_datetime(str(trade_day)).strftime('%Y-%m-%d') + ' 22:30:00')
-#
-#     # 创建 get_snapshoot 实例
-#     snapshoot = get_snapshoot(contract, "")
-#
-#     # 对每个日期时间进行查询
-#     results = []
-#     for query_time in date_time_list:
-#         snapshoot.time = query_time
-#         quote_data = snapshoot.get_quote_data()
-#         result = snapshoot.certain_snapshoot(quote_data, query_time)
-#         results.append(result)
-#         print(query_time)
-#     return results
-#
-#
-# contracts_df = pd.read_csv(
-#     r"C:\Users\maki\Desktop\quantchina\Futures-main\data_wash\maincontract\RU_20091201_20260624.csv")
-# calendar = pd.read_csv('calendar.csv').rename(
-#     columns={'TRADE_DAYS': 'trade_days', 'S_INFO_EXCHMARKET': 'exchmarket'})
-# calendar['trade_days'] = calendar['trade_days'].astype(str)
-#
-# exchange = contracts_df['contract'][0].split('.')[-1][:2]
-# reversed_contracts_df = contracts_df.iloc[::-1]
-#
-# # 使用线程池处理每个 contract
-# results = []
-# with ThreadPoolExecutor() as executor:
-#     futures = [executor.submit(process_contract, row) for _, row in reversed_contracts_df.iterrows()]
-# # with ProcessPoolExecutor() as executor:
-# #     futures = [executor.submit(process_contract, row) for _, row in reversed_contracts_df.iterrows()]
-#
-#     for future in as_completed(futures):
-#         results.extend(future.result())
-#
-# # 合并结果并输出到 CSV 文件
-# combined_results = pd.concat(results, ignore_index=True)
-# sorted_results = combined_results.sort_values(by=['query_time'])
-# sorted_results.to_csv('RU.csv', index=False)
-
-# 打印过滤后的数据
-# filtered_data.to_csv('filter_test.csv')
+                    if snapshoot_results:
+                        combined_snapshoot_results = pd.concat(snapshoot_results, ignore_index=True)
+                        sorted_snapshoot_results = combined_snapshoot_results.sort_values(by=['query_time']).reset_index(drop=True)
+                        snapshoot_output_file = os.path.join(snapshoot_results_folder, f"{os.path.splitext(file_name)[0]}_results.csv")
+                        sorted_snapshoot_results.to_csv(snapshoot_output_file, index=False)
+                    if wap_results:
+                        combined_wap_results = pd.concat(wap_results, ignore_index=True)
+                        sorted_wap_results = combined_wap_results.sort_values(by=['start_time']).reset_index(drop=True)
+                        wap_output_file = os.path.join(wap_results_folder, f"{os.path.splitext(file_name)[0]}_results.csv")
+                        sorted_wap_results.to_csv(wap_output_file, index=False)
+        if snapshoot_results:
+            combined_snapshoot_results = pd.concat(snapshoot_results, ignore_index=True)
+            sorted_snapshoot_results = combined_snapshoot_results.sort_values(by=['query_time']).reset_index(drop=True)
+            snapshoot_output_file = os.path.join(snapshoot_results_folder,
+                                                 f"{os.path.splitext(file_name)[0]}_results.csv")
+            sorted_snapshoot_results.to_csv(snapshoot_output_file, index=False)
+        if wap_results:
+            combined_wap_results = pd.concat(wap_results, ignore_index=True)
+            sorted_wap_results = combined_wap_results.sort_values(by=['start_time']).reset_index(drop=True)
+            wap_output_file = os.path.join(wap_results_folder, f"{os.path.splitext(file_name)[0]}_results.csv")
+            sorted_wap_results.to_csv(wap_output_file, index=False)

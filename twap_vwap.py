@@ -10,7 +10,9 @@ from datetime import datetime, timedelta
 from ApiClient import ApiClient
 from logbook import Logger
 from Common.logger import get_logger
-from quote_wash import DataProcessor
+from quote_wash_revised import DataProcessor
+
+
 warnings.filterwarnings('ignore')
 pd.set_option('display.max_columns', None)
 def get_logger_snapshoot(name, debug=False):
@@ -137,12 +139,12 @@ class get_wap(ApiClient):
 
         # 保留特定的列
         required_columns = ['symbol',  'datetime', 'last_prc',
-                            'volume', 'turnover',  'trading_date']
+                            'volume', 'turnover',  'trading_date', 'ask_prc1','ask_vol1','bid_prc1','bid_vol1']
 
         missing_columns = [col for col in required_columns if col not in day_quote.columns]
 
         # 如果关键字段缺失，打日志+跳过
-        if any(col in ['symbol', 'datetime', 'volume', 'turnover', 'last_prc'] for col in
+        if any(col in ['symbol', 'datetime', 'volume', 'turnover', 'last_prc','ask_prc1','ask_vol1','bid_prc1','bid_vol1' ] for col in
                missing_columns):
             self.logger.warning(
                 f"数据字段有缺失 contract={contract}, trading_date={query_date}, 缺失字段={missing_columns}")
@@ -227,6 +229,11 @@ class get_wap(ApiClient):
             masktime = (day_quote['resample_time'] >= min(start_datetime,end_datetime)) & (day_quote['resample_time'] <= max(start_datetime,end_datetime))
             df_period = day_quote[maskdate & masktime]
 
+            df_period['middle_price'] = np.where(
+                (df_period['ask_prc1'] != 0) & (df_period['bid_prc1'] != 0),
+                (df_period['ask_prc1'] + df_period['bid_prc1']) / 2,
+                0
+            )
             if df_period.empty:
                 print( f"无数据， date={date}, start_time={start_datetime}")
 
@@ -236,10 +243,13 @@ class get_wap(ApiClient):
                 # 计算 VWAP 时需要考虑成交量的差值
                 df_period['volume_diff'] = df_period['volume'].diff().fillna(df_period['volume'])
 
-                twap = df_period['last_prc'].mean()
-                vwap = np.dot(df_period['last_prc'], df_period['volume_diff']) / df_period['volume_diff'].sum()
+                twap = df_period['middle_price'].mean()
+                if df_period['volume_diff'].sum() != 0 and not np.isnan(df_period['volume_diff'].sum()):
+                    vwap = np.dot(df_period['middle_price'], df_period['volume_diff']) / df_period['volume_diff'].sum()
+                else:
+                    vwap = df_period['middle_price'].iloc[0]
 
-                # 创建临时行并且添加结果
+                    # 创建临时行并且添加结果
                 # temp_row = pd.Series({'date': date,
                 #                       'start_time': start_datetime.strftime('%H%M%S%f'),
                 #                       'datetime': start_datetime,
