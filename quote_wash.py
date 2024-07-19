@@ -8,15 +8,7 @@ import logging
 from datetime import datetime, timedelta
 
 def get_logger_quote_wash(name, debug=False):
-    """
-    初始化一个日志记录器。
 
-    参数:
-    - name (str): 日志记录器的名称。
-
-    返回:
-    - logger (logging.Logger): 配置好的日志记录器。
-    """
     logger = logging.getLogger(name)
     if not logger.handlers:
         logger.setLevel(logging.DEBUG if debug else logging.INFO)
@@ -55,7 +47,7 @@ class DataProcessor:
         # if missing_columns:
         #     return None
 
-        # 如果date_time在missing_columns 里面，新建一个time列
+        # 新建time列和date列保持格式统一
         day_quote['datetime'] = pd.to_datetime(day_quote['datetime'])
         # if 'date' in missing_columns or 'time' in missing_columns:
         #     day_quote['datetime'] = pd.to_datetime(day_quote['datetime'])
@@ -63,8 +55,8 @@ class DataProcessor:
         day_quote['date'] = day_quote['datetime'].dt.strftime('%Y%m%d')
 
         contract_code = future_index
-        # 根据contract_code找到对应的开盘时间
 
+        # 根据contract_code找到对应的开盘时间
         contract_hours = self.opening_hours_df.loc[self.opening_hours_df['code'] == contract_code, 'hours'].values[0]
 
         # 过滤时间
@@ -114,31 +106,7 @@ class DataProcessor:
         resampled_data = pd.DataFrame()
         # 循环处理每一个日期
         for date in data['date'].unique():
-            # 提取该日期的开盘时间段
-            # opening_hours_str = self.opening_hours_df.loc[self.opening_hours_df['code'] == contract_code, 'hours'].values[0]
-            #
-            # opening_hours = opening_hours_str.split()[0]
-            # start_time_str, end_time_str = opening_hours.split('-')
-            # start_datetime = datetime.strptime(date.strftime('%Y-%m-%d') + start_time_str, '%Y-%m-%d%H:%M')
-            # end_datetime = datetime.strptime(date.strftime('%Y-%m-%d') + end_time_str, '%Y-%m-%d%H:%M')
-            #
-            # # 筛选出当前日期的数据
-            # date_data = data[data['date'] == date].copy()
-            # original_datetime = date_data['datetime'].copy()
-            # date_data['resample_time'] = original_datetime
-            # # 生成当前日期的所有时间点
-            # all_times = pd.date_range(start=start_datetime, end=end_datetime, freq=freq)
-            #
-            # # 重新索引并填充缺失值
-            # resampled = date_data.set_index('resample_time').reindex(all_times, method='pad')
-            #
-            # # 添加日期列和重采样时间列
-            # resampled['date'] = date
-            # resampled['resample_time'] = resampled.index
-            #
-            # resampled = resampled[resampled['last_prc'].notna()]
-            # # 将重采样的结果追加到总的重采样数据中
-            # resampled_data = pd.concat([resampled_data, resampled], ignore_index=True)
+
             opening_hours_str = self.opening_hours_df.loc[self.opening_hours_df['code'] == contract_code, 'hours'].values[0]
             periods = opening_hours_str.split()
 
