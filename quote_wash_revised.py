@@ -1,13 +1,19 @@
 from datetime import datetime, timedelta
 import pandas as pd
 
-from Common.logger import get_logger
 import logging
-from datetime import datetime, timedelta
 
 
 def get_logger_quote_wash(name, debug=False):
+    """
+    初始化一个日志记录器。
 
+    参数:
+    - name (str): 日志记录器的名称。
+
+    返回:
+    - logger (logging.Logger): 配置好的日志记录器。
+    """
     logger = logging.getLogger(name)
     if not logger.handlers:
         logger.setLevel(logging.DEBUG if debug else logging.INFO)
@@ -17,12 +23,6 @@ def get_logger_quote_wash(name, debug=False):
         handler.setFormatter(formatter)
         logger.addHandler(handler)
     return logger
-
-# 数据清洗需要做的：
-# 明确开始和结束的时间，通过读取CSV文件获得，每个品种读取一次然后作为全局变量。删除在该时间段以外的数据。删除时间异常的数据。 已完成
-# 保留特定的列。
-# 开盘时间段内的数据时间间隔统一为0.5秒，缺失的部分由之前的数据填充。
-# 如果是.CZC，需要补全合约代码
 class DataProcessor:
     def __init__(self, future_index, opening_hours_file='future_information.csv', debug=False):
         self.future_index = future_index
@@ -39,9 +39,6 @@ class DataProcessor:
 
         required_columns = ['datetime', 'date', 'time']
         missing_columns = [col for col in required_columns if col not in day_quote.columns]
-
-        if 'last_prc' in day_quote.columns and 'open_interest' in day_quote.columns:
-            day_quote = day_quote[(day_quote['last_prc'] != 0) & (day_quote['open_interest'] != 0)]
 
         day_quote['datetime'] = pd.to_datetime(day_quote['datetime'])
 
