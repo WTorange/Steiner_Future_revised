@@ -15,7 +15,7 @@ quote_wash_revised.py调整了部分语句，优化了future_information的读�
 
 ## get_snapshoot3.py 
 获取快照数据，内置查询数据、调整合约代码使得和数据库查询格式匹配，区分日夜盘，返回快照数据等功能。
-需要读取wind主力合约数据的csv表格
+需要读取wind主力合约数据的csv表格，和calendar.csv交易所开市日期表格。
 调用quote_wash.py清洗数据
 
 ## quote_to_database.py
@@ -24,6 +24,8 @@ quote_wash.py的修改版，用来把清洗后的数据按天落到组内数据�
 
 ## twap_vwap.py
 获取合约的twap_vwap价格，需要读取wind主力合约数据的csv表格或类似格式的表格。可自己指定时间和区间长度。
+需要读取wind主力合约数据的csv表格，和calendar.csv交易所开市日期表格。
 
 ## snapshoot&wap.py
 整合了get_snapshoot3和twap_vwap的共性部分，可以同时输出快照数据和wap价格数据，提高效率。
+需要读取wind主力合约数据的csv表格，和calendar.csv交易所开市日期表格。
