@@ -10,13 +10,35 @@ import plotly.graph_objs as go
 import plotly.io as pio
 from io import BytesIO
 import pdfkit
+from connect_wind import ConnectDatabase
 
-comm_dict  = {
+
+# 从wind获取期货信息并构建字典：一手的张数（交易计量单位）（punit），最低保证金要求S_INFO_FTMARGINS，涨跌停幅度S_INFO_MAXPRICEFLUCT
+class get_information(ConnectDatabase):
+    def __init__(self):
+        # self.future_symbol = future_symbol  #例 铜CU(大写)
+        # b
+        self.sql = f'''
+                       SELECT S_INFO_WINDCODE, S_INFO_CODE, S_INFO_PUNIT, S_INFO_FTMARGINS, S_INFO_MAXPRICEFLUCT
+                       FROM CFUTURESCONTPRO
+                       '''
+
+        super().__init__(self.sql)
+        self.df = super().get_data()
+
+    def run(self):
+        return self.df
+
+
+im = get_information()
+temp = im.run()
+
+comm_dict = {
     # 类型，开仓，平仓，平今手续费
-    'I':(1, 0.00012, 0.00006, 0.00012),
-    'RB':(1, 0.000045, 0.000045, 0.000045),
-    'AG':(1, 0.000051,0.000051,0.000051),
-    'BR':(1, 0.000021, 0.000021,  0.000021)
+    'I': (1, 0.00012, 0.00006, 0.00012),
+    'RB': (1, 0.000045, 0.000045, 0.000045),
+    'AG': (1, 0.000051, 0.000051, 0.000051),
+    'BR': (1, 0.000021, 0.000021, 0.000021)
 }
 
 margin_dict = {
@@ -27,8 +49,25 @@ margin_dict = {
 }
 
 
+class backtest():
+    def __init__(self, symbol: str, initial_capital: int, leverage: float, signal_df, start_date, end_date):
+        self.symbol = symbol
+        self.df = signal_df
+        self.leverage = leverage
+        self.margin = margin_dict[symbol]
+        self.comm_dict = comm_dict
+        self.multi = multi_dict[symbol]
+        self.start_date = start_date
+        self.end_date = end_date
+        self.initial_capital= initial_capital
+
 
 def calculate_operation(df):
+    """
+    输入：包含信号的dataframe,start_date:yyyymmdd,end_date: yyyymmdd.
+    根据初始和结束日期选择信号df中的片段，计算每天的operation
+    输出：计算每天的operation，新的df
+    """
     # 将date列转换为datetime类型
     df['date'] = pd.to_datetime(df['date'])
 
@@ -36,16 +75,62 @@ def calculate_operation(df):
     df['operation'] = df['position'].diff().fillna(0).astype(int)
 
     return df
+def determine_trade_contracts(symbol):
 
-def process_trades(position_df, contract_df):
-    position_df['date'] = pd.to_datetime(position_df['date'], format='%Y/%m/%d')
+    # 确定每天交易的合约代码
+    folder_path = r"Z:\temporary\Steiner\data_wash\linux_so\py311\essentialcontract"
+    file_pattern = os.path.join(folder_path, f"{symbol}_*.csv")
+    matching_files = glob.glob(file_pattern)
+    if len(matching_files) == 0:
+        print(f"No matching daybar file found for symbol: {symbol}")
+        return None
+    elif len(matching_files) > 1:
+        print(f"Multiple matching daybar files found for symbol: {symbol}.")
+        print("Please ensure there is only one matching file or refine the search criteria.")
+        return None
+    else:
+        # 读取唯一匹配的文件
+        contract_file = matching_files[0]
+        print(f"Using daybar file: {contract_file}")
+        df = pd.read_csv(contract_file)
+    df['trade_contract'] = ''
+    df['change_contract'] = ''
+
+    # 初始交易合约为第一天的主力合约
+    current_contract = df.at[0, 'main_contract']
+    df.at[0, 'trade_contract'] = current_contract
+
+    for i in range(1, len(df) - 1):
+        if df.at[i, 'main_contract'] != current_contract and df.at[
+            i - 1, 'main_contract'] != current_contract and df.at[i - 2, 'main_contract'] != current_contract\
+                and df.at[i - 3, 'main_contract'] == current_contract:
+
+            df.at[i, 'trade_contract'] = current_contract
+            df.at[i, 'change_contract'] = df.at[i, 'main_contract']
+            # 接下来的一天也在换仓期
+            current_contract = df.at[i, 'main_contract']
+        elif df.at[i, 'trade_contract'] == '':
+            # 如果不是换仓期，交易前一天的合约
+            df.at[i, 'trade_contract'] = current_contract
+    df['date'] = pd.to_datetime(df['date'], format='%Y-%m-%d').dt.strftime('%Y%m%d')
+
+    contract = df[['date', 'trade_contract', 'change_contract']]
+    return contract
+
+
+def process_trades(df, contract_df):
+    """
+    输入：包含信号和日期的df
+    输出：匹配每天要交易的合约，包括换约
+    """
+    df['date'] = pd.to_datetime(df['date'], format='%Y/%m/%d')
     contract_df['date'] = pd.to_datetime(contract_df['date'], format='%Y%m%d')
 
     # 初始化结果DataFrame
     results = []
 
     # 合并两个数据框，基于日期进行匹配
-    merged_df = pd.merge(position_df, contract_df, on='date', how='left')
+    merged_df = pd.merge(df, contract_df, on='date', how='left')
 
     for _, row in merged_df.iterrows():
         date = row['date']
@@ -55,7 +140,7 @@ def process_trades(position_df, contract_df):
         trade_contract = row['trade_contract']
         change_contract = row['change_contract']
         if pd.notna(change_contract) and daynight == 'day':
-        # if pd.notna(change_contract) and daynight == 'day' and position != 0:
+            # if pd.notna(change_contract) and daynight == 'day' and position != 0:
             # 换约操作
             # 平掉原合约
             results.append({
@@ -89,25 +174,34 @@ def process_trades(position_df, contract_df):
     if 'Unnamed: 0' in results.columns:
         results.drop(columns=['Unnamed: 0'], inplace=True)
     return results
-# trade_df = pd.read_csv('001.csv')
-# BR_trade = pd. read_csv('BR_trade.csv')
-# trade_df  = calculate_operation(trade_df )
+
+
+
+trade_df = pd.read_csv('001.csv')
+# BR_trade = pd.read_csv('BR_trade.csv')
+BR_trade = determine_trade_contracts('BR')
+trade_df = calculate_operation(trade_df)
 # print(BR_trade)
-# contract =  process_trades(position_df=trade_df, contract_df=BR_trade)
+contract = process_trades(trade_df, BR_trade)
+
+
 # contract.to_csv('112.csv')
-contract = pd.read_csv('112.csv')
+# contract = pd.read_csv('112.csv')
 # 合并价格
 
 
-
-def query_trade_prices(signal_df, symbol):
+def query_trade_prices(df, symbol):
+    """
+    输入：上一步处理好的df
+    输出：匹配好每天每个合约交易价格的df
+    """
     # 不区分日夜盘
     # 定义wap结果表格所在目录
     wap_dir = r'Z:\temporary\Steiner\data_wash\linux_so\py311\temp'
 
     # 查找符合symbol的wap结果文件
     wap_file = [file for file in os.listdir(wap_dir) if
-                      file.startswith(symbol + '_') and file.endswith('_results.csv')]
+                file.startswith(symbol + '_') and file.endswith('_results.csv')]
     if not wap_file:
         raise FileNotFoundError(f"No matching files found for symbol {symbol} in directory {wap_dir}")
 
@@ -121,7 +215,7 @@ def query_trade_prices(signal_df, symbol):
     # 将日期格式转换为一致的格式
     wap_df['date'] = pd.to_datetime(wap_df['date'], format='%Y%m%d').dt.strftime('%Y-%m-%d')
     wap_df['trading_date'] = pd.to_datetime(wap_df['trading_date'], format='%Y-%m-%d').dt.strftime('%Y-%m-%d')
-    signal_df['date'] = pd.to_datetime(signal_df['date']).dt.strftime('%Y-%m-%d')
+    df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
     wap_df['time'] = pd.to_datetime(wap_df['start_time']).dt.time
 
     # 定义匹配时间
@@ -129,7 +223,7 @@ def query_trade_prices(signal_df, symbol):
     night_time = pd.to_datetime('22:30:00').time()
 
     # 创建新列 'trade_price'，初始化为空值
-    signal_df['trade_price'] = None
+    df['trade_price'] = None
 
     # 定义一个辅助函数进行匹配
     def match_trade_price(row, wap_df):
@@ -151,19 +245,20 @@ def query_trade_prices(signal_df, symbol):
         return None
 
     # 应用辅助函数匹配 'trade_price'
-    signal_df['trade_price'] = signal_df.apply(match_trade_price, axis=1, wap_df=wap_df)
-    if 'Unnamed: 0' in signal_df.columns:
-        signal_df.drop(columns=['Unnamed: 0'], inplace=True)
-    return signal_df
+    df['trade_price'] = df.apply(match_trade_price, axis=1, wap_df=wap_df)
+    if 'Unnamed: 0' in df.columns:
+        df.drop(columns=['Unnamed: 0'], inplace=True)
+    return df
 
 
 ## 添加：如果operation != 0且 trade_price ==0,把该行的operation设为0，下一行的operation=原来的operation+上一行的operation，position也相应变化。
 
 
-
-
-
-def add_snapshoot(signal_df, symbol):
+def add_snapshoot(df, symbol):
+    """
+    根据symbol添加snapshoot数据库中的信息
+    输出：添加了可交易标签、base_price，开盘价，前收和收盘价
+    """
     # 设置文件夹路径
     directory_path = r'Z:\temporary\Steiner\data_wash\linux_so\py311\snapshoot_results_oi'
 
@@ -184,10 +279,10 @@ def add_snapshoot(signal_df, symbol):
     night_time = pd.to_datetime('22:30:00').time()
 
     # 创建新列 'base_price'，初始化为空值
-    signal_df['base_price'] = None
-    signal_df['open'] = None
-    signal_df['prev_close'] = None
-    signal_df['tradable'] = None
+    df['base_price'] = None
+    df['open'] = None
+    df['prev_close'] = None
+    df['tradable'] = None
 
     # 定义一个辅助函数进行匹配
     def match_snapshoot_data(row, snapshoot_df):
@@ -206,43 +301,61 @@ def add_snapshoot(signal_df, symbol):
             matched_row = matched_snapshoot_df[matched_snapshoot_df['time'] == night_time]
 
         if not matched_row.empty:
-            return matched_row[['last_prc', 'open', 'prev_close','tradable']].iloc[0]
-        return pd.Series([None, None, None, None], index=['last_prc', 'open', 'prev_close','tradable'])
-
+            return matched_row[['last_prc', 'open', 'prev_close', 'tradable']].iloc[0]
+        return pd.Series([None, None, None, None], index=['last_prc', 'open', 'prev_close', 'tradable'])
 
     # 应用辅助函数匹配 'base_price'，open, pre_close, close
-    snapshoot_data = signal_df.apply(match_snapshoot_data, axis=1, snapshoot_df=snapshoot_df)
+    snapshoot_data = df.apply(match_snapshoot_data, axis=1, snapshoot_df=snapshoot_df)
     # print(snapshoot_data)
-    signal_df[['base_price', 'open', 'prev_close','tradable']] = snapshoot_data[['last_prc', 'open', 'prev_close','tradable']]
+    df[['base_price', 'open', 'prev_close', 'tradable']] = snapshoot_data[
+        ['last_prc', 'open', 'prev_close', 'tradable']]
 
-
-    signal_df['slippage'] = signal_df.apply(
+    df['slippage'] = df.apply(
         lambda x: x['trade_price'] - x['base_price'] if pd.notnull(x['trade_price']) and pd.notnull(
             x['base_price']) else None, axis=1)
 
-    signal_df['close'] = signal_df.groupby('contract')['prev_close'].shift(-1)
+    df['close'] = df.groupby('contract')['prev_close'].shift(-1)
 
-    if 'Unnamed: 0' in signal_df.columns:
-        signal_df.drop(columns=['Unnamed: 0'], inplace=True)
+    if 'Unnamed: 0' in df.columns:
+        df.drop(columns=['Unnamed: 0'], inplace=True)
+
+    return df
 
 
-    return signal_df
-
-
-def add_settle_prc(signal_df, day_bar):
+def add_settle_prc(df, symbol):
+    """
+    根据symbol匹配合适的daybar文件，添加settle列
+    输出：df
+    """
     # 先处理日期格式，使其统一
-    signal_df['date'] = pd.to_datetime(signal_df['date']).dt.strftime('%Y%m%d')
-    day_bar['TRADE_DT'] = day_bar['TRADE_DT'].astype(str)
+    folder_path = r"Z:\data\future\daybar"
+    file_pattern = os.path.join(folder_path, f"{symbol}_*.csv")
 
+    matching_files = glob.glob(file_pattern)
+    if len(matching_files) == 0:
+        print(f"No matching daybar file found for symbol: {symbol}")
+        return None
+    elif len(matching_files) > 1:
+        print(f"Multiple matching daybar files found for symbol: {symbol}.")
+        print("Please ensure there is only one matching file or refine the search criteria.")
+        return None
+    else:
+        # 读取唯一匹配的文件
+        daybar_file = matching_files[0]
+        print(f"Using daybar file: {daybar_file}")
+        day_bar = pd.read_csv(daybar_file)
+
+    df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y%m%d')
+    day_bar['TRADE_DT'] = day_bar['TRADE_DT'].astype(str)
     # 重命名列以便合并
-    signal_df.rename(columns={'date': 'TRADE_DT', 'contract': 'S_INFO_WINDCODE'}, inplace=True)
+    df.rename(columns={'date': 'TRADE_DT', 'contract': 'S_INFO_WINDCODE'}, inplace=True)
 
     # 执行合并操作
-    merged_df = pd.merge(signal_df, day_bar[['TRADE_DT', 'S_INFO_WINDCODE', 'S_DQ_SETTLE']],
+    merged_df = pd.merge(df, day_bar[['TRADE_DT', 'S_INFO_WINDCODE', 'S_DQ_SETTLE']],
                          on=['TRADE_DT', 'S_INFO_WINDCODE'], how='left')
 
     # 将合并结果中的'S_DQ_SETTLE'列赋值给signal_df的'settle_prc'列
-    signal_df['settle_prc'] = merged_df['S_DQ_SETTLE']
+    df['settle_prc'] = merged_df['S_DQ_SETTLE']
 
     # day_signal_df = signal_df[signal_df['daynight'] == 'day']
     # day_merged_df = pd.merge(day_signal_df, day_bar[['TRADE_DT', 'S_INFO_WINDCODE', 'S_DQ_CLOSE']],
@@ -250,16 +363,16 @@ def add_settle_prc(signal_df, day_bar):
 
     # signal_df.loc[signal_df['daynight'] == 'day', 'close'] = day_merged_df['S_DQ_CLOSE']
 
-    signal_df.rename(columns={'TRADE_DT': 'date', 'S_INFO_WINDCODE': 'contract'}, inplace=True)
+    df.rename(columns={'TRADE_DT': 'date', 'S_INFO_WINDCODE': 'contract'}, inplace=True)
     # signal_df = signal_df[['date','daynight',	'position',	'operation',	'contract',	'trade_price','settle_prc']]
-    if 'Unnamed: 0' in signal_df.columns:
-        signal_df.drop(columns=['Unnamed: 0'], inplace=True)
-    return signal_df
+    if 'Unnamed: 0' in df.columns:
+        df.drop(columns=['Unnamed: 0'], inplace=True)
+    return df
+
 
 def correct_trade(df):
     """
     根据 'tradable' 列的值修正 'corrected_position' 和 'corrected_operation' 列。
-
     返回值:
     df: 添加了 'corrected_position' 和 'corrected_operation' 列的 DataFrame
     """
@@ -267,9 +380,14 @@ def correct_trade(df):
     df['corrected_position'] = df['position']
     df['corrected_operation'] = df['operation']
 
+    # 当 'tradable' == 4 时，将 'corrected_operation' 设为 0，行情缺失不交易
+    df.loc[df['tradable'] == 4, 'corrected_operation'] = 0
 
-    # 将 tradable == 2, 3, 4 的行的 corrected_operation 设为 0
-    df.loc[df['tradable'].isin([2, 3, 4]), 'corrected_operation'] = 0
+    # 当 'tradable' == 2 时，将 'corrected_operation' > 0 的值改为 0，涨停不能买入
+    df.loc[(df['tradable'] == 2) & (df['corrected_operation'] > 0), 'corrected_operation'] = 0
+
+    # 当 'tradable' == 3 时，将 'corrected_operation' < 0 的值改为 0，跌停不能卖出
+    df.loc[(df['tradable'] == 3) & (df['corrected_operation'] < 0), 'corrected_operation'] = 0
 
     df['position_copy'] = df['position'].where(df['corrected_operation'] != 0)
 
@@ -278,10 +396,8 @@ def correct_trade(df):
     df.drop(columns=['position_copy'], inplace=True)
     df['corrected_operation'] = df['corrected_position'].diff().fillna(0)
 
-    # 计算 corrected_position 列
+    # 计算 corrected_position 列，保证可交易的部分符合原来的目标position
     df['corrected_position'] = df['corrected_operation'].cumsum()
-
-
 
     df['corrected_position_shifted'] = df['corrected_position'].shift(1).fillna(0)
 
@@ -309,11 +425,16 @@ def correct_trade(df):
     df.drop(columns=['corrected_position_shifted'])
     return df
 
+
 def fill_number(df):
-    df['trade_price'] = df['trade_price'].fillna(df['base_price']+df['slippage'].shift(1))
+    """
+    填充价格类的缺失值
+    """
+    df['trade_price'] = df['trade_price'].fillna(df['base_price'] + df['slippage'].shift(1))
     df['close'] = df['close'].fillna(df['settle_prc'])
     df['prev_close'] = df['prev_close'].fillna(df.groupby('contract')['close'].shift(1))
     return df
+
 
 def slippage(df):
     df['slippage'] = df.apply(
@@ -329,8 +450,8 @@ def slippage(df):
 result_df = query_trade_prices(contract, 'BR')
 result_df = add_snapshoot(result_df, 'BR')
 
-daybar = pd.read_csv('BR_20201201_20240710.csv')
-signal_df = add_settle_prc(result_df, daybar)
+# daybar = pd.read_csv('BR_20201201_20240710.csv')
+signal_df = add_settle_prc(result_df, 'BR')
 signal_df = correct_trade(signal_df)
 
 signal_df = fill_number(signal_df)
@@ -346,7 +467,6 @@ signal_df = pd.read_csv('113.csv')
 # signal_df.to_csv('114.csv')
 
 
-
 # 一手是多少张合约
 multi_dict = {
     'BR': 5
@@ -357,6 +477,7 @@ initial_capital = 1000000
 leverage = 2
 # 计算实际可用资金
 available_capital = initial_capital * leverage
+
 
 # 先初始资金，开仓，手续费，每天计算理论和实际净值，一直到最后。然后拆分
 # 下面要改：
@@ -455,13 +576,19 @@ available_capital = initial_capital * leverage
 #     df.drop(['position_shifted', 'operation_type_shifted', 'contract_shifted', 'date_shifted','position_shifted'], axis=1, inplace=True)
 #     return df
 def operation_type(df):
-    # 标注开仓(1)、平仓(2)、无操作(0)
+    """
+    标注开仓(1)、平仓(2)、无操作(0)
+    输出：df
+    """
+
     df['position_shifted'] = df['position'].shift(1)
     df['operation_type'] = np.where(
         df['position'].abs() - df['position_shifted'].abs() > 0, 1,
         np.where(df['position'].abs() - df['position_shifted'].abs() < 0, 2, 0)
     )
     return df
+
+
 # signal_df = pieces(signal_df, 'BR')
 # signal_df = calculate_commission(signal_df, 'BR')
 #
@@ -469,18 +596,31 @@ signal_df = operation_type(signal_df)
 # signal_df.to_csv('115.csv')
 
 
-type = comm_dict[symbol][0]
-def calculate_commission(type, operation_type,piece_change,trade_price):
-    if type == 1 and operation_type != 0:
+future_type = comm_dict[symbol][0]
+
+
+def calculate_commission(symbol, operation_type, piece_change, trade_price):
+    """
+    计算手续费，需要在calculate_pnl中使用
+    返回一个float
+    """
+    future_type = comm_dict[symbol][0]
+    if future_type == 1 and operation_type != 0:
         commission = abs(piece_change) * trade_price * comm_dict[symbol][operation_type]
 
-    elif type == 2 and operation_type != 0:
-        commission = abs(piece_change) /multi * comm_dict[symbol][operation_type]
+    elif future_type == 2 and operation_type != 0:
+        commission = abs(piece_change) / multi * comm_dict[symbol][operation_type]
     else:
-        commission =0
+        commission = 0
     return commission
 
+
 def calculate_pnl(df):
+    """
+    核心段
+    FIFO原则计算每一次的交易合约张数、pnl，成本价格，手续费
+    输出：df
+    """
     # 这里合并到iterrows里面
 
     df['actual_stage_value'] = 0.0
@@ -527,7 +667,8 @@ def calculate_pnl(df):
 
         else:
             # Calculate lots and pieces for non-zero operation_types
-            lots = np.floor(abs(prev_row['actual_stage_value'] * leverage * position / (multi * trade_price))) * np.sign(position)
+            lots = np.floor(
+                abs(prev_row['actual_stage_value'] * leverage * position / (multi * trade_price))) * np.sign(position)
             actual_pieces = lots * multi
             theo_pieces = prev_row['theo_stage_value'] * leverage * position / base_price
 
@@ -629,7 +770,8 @@ def calculate_pnl(df):
             else:
                 continue
             # Update actual_stage_value with pnl
-            df.at[i, 'actual_stage_value'] = prev_row['actual_stage_value'] + df.at[i, 'actual_pnl'] - df.at[i,'commission']
+            df.at[i, 'actual_stage_value'] = prev_row['actual_stage_value'] + df.at[i, 'actual_pnl'] - df.at[
+                i, 'commission']
             df.at[i, 'theo_stage_value'] = prev_row['theo_stage_value'] + df.at[i, 'theo_pnl']
     if 'Unnamed: 0' in df.columns:
         df.drop(columns=['Unnamed: 0'], inplace=True)
@@ -652,13 +794,16 @@ def calculate_pnl(df):
 # trade_price = 0 : 填入base_price。
 
 def calculate_margin_and_free_capital(symbol, initial_capital, df):
-
+    '''
+    计算保证金的占用情况
+    输出：df
+    '''
 
     # 获取对应品种的保证金费率
     margin_rate = margin_dict.get(symbol, 0)
 
     # 计算空闲资金数量
-    df['free_capital'] = initial_capital -df['actual_pieces'].abs()* df['settle_prc'] * margin_rate
+    df['free_capital'] = initial_capital - df['actual_pieces'].abs() * df['settle_prc'] * margin_rate
 
     # 计算保证金占用比例
     df['margin_ratio'] = 1 - df['free_capital'] / initial_capital
@@ -673,14 +818,16 @@ df = calculate_pnl(signal_df)
 df = calculate_margin_and_free_capital('BR', initial_capital, df)
 df.to_csv('117.csv')
 
+
 #
 def calculate_actual_net_value_change(row):
-
     if row['operation_type'] == 1:
-        return row['actual_piece_change'] * (row['close'] - row['trade_price']) +(row['actual_pieces'] - row['actual_piece_change'])*(row['close'] - row['prev_close'])
+        return row['actual_piece_change'] * (row['close'] - row['trade_price']) + (
+                    row['actual_pieces'] - row['actual_piece_change']) * (row['close'] - row['prev_close'])
     elif row['operation_type'] == 2 or 3:
 
-        return (-row['trade_price'] + row['prev_close']) * row['actual_piece_change'] + (row['actual_pieces_shift'] + row['actual_piece_change']) * (row['close'] - row['prev_close'])
+        return (-row['trade_price'] + row['prev_close']) * row['actual_piece_change'] + (
+                    row['actual_pieces_shift'] + row['actual_piece_change']) * (row['close'] - row['prev_close'])
 
     # elif row['operation_type'] == 3:
     #     return row['actual_pnl'] + (row['pieces_shift'] + row['piece_change']) * (row['close'] - row['prev_close'])
@@ -689,28 +836,34 @@ def calculate_actual_net_value_change(row):
     else:
         return 0  # 若无效的 operation_type 返回 0
 
+
 def calculate_theo_net_value_change(row):
     if row['operation_type'] == 1:
-        return row['theo_piece_change'] * (row['close'] - row['base_price']) + (row['theo_pieces'] - row['theo_piece_change']) * (row['close'] - row['prev_close'])
+        return row['theo_piece_change'] * (row['close'] - row['base_price']) + (
+                    row['theo_pieces'] - row['theo_piece_change']) * (row['close'] - row['prev_close'])
 
     elif row['operation_type'] == 2 or 3:
 
-        return (-row['base_price'] + row['prev_close']) * row['theo_piece_change'] + (row['theo_pieces_shift'] + row['theo_piece_change']) * (row['close'] - row['prev_close'])
+        return (-row['base_price'] + row['prev_close']) * row['theo_piece_change'] + (
+                    row['theo_pieces_shift'] + row['theo_piece_change']) * (row['close'] - row['prev_close'])
 
-    # elif row['operation_type'] == 3:
-    #     return row['actual_pnl'] + (row['theo_pieces_shift'] + row['theo_piece_change']) * (row['close'] - row['prev_close'])
+    # elif row['operation_type'] == 3: return row['actual_pnl'] + (row['theo_pieces_shift'] + row[
+    # 'theo_piece_change']) * (row['close'] - row['prev_close'])
 
     elif row['operation_type'] == 0:
         return row['theo_pieces'] * (row['close'] - row['prev_close'])
 
     else:
         return 0  # 若无效的 operation_type 返回 0
+
+
 def net_value_change(df):
     df['actual_pieces_shift'] = df['actual_pieces'].shift(1).fillna(0)
     df['theo_pieces_shift'] = df['theo_pieces'].shift(1).fillna(0)
-    df['actual_net_value_change'] = df.apply(calculate_actual_net_value_change, axis=1)-df['commission']
+    df['actual_net_value_change'] = df.apply(calculate_actual_net_value_change, axis=1) - df['commission']
     df['theo_net_value_change'] = df.apply(calculate_theo_net_value_change, axis=1)
     return df
+
 
 def net_value(df):
     df['actual_net_value'] = initial_capital + df['actual_net_value_change'].cumsum()
@@ -718,6 +871,7 @@ def net_value(df):
     df['actual_net_value2'] = 1 + (df['actual_net_value_change'].cumsum() - df['commission'].cumsum()) / initial_capital
     df['theo_net_value2'] = 1 + df['theo_net_value_change'].cumsum() / initial_capital
     return df
+
 
 def slippage_rounding_revenue(df):
     # 添加滑点收益列
@@ -728,10 +882,12 @@ def slippage_rounding_revenue(df):
         'commission']
     return df
 
+
 def yields(df):
     df['theo_yields'] = df['theo_net_value'].pct_change(fill_method=None)
     df['actual_yields'] = df['actual_net_value'].pct_change(fill_method=None)
     return df
+
 
 df = net_value_change(df)
 df = net_value(df)
@@ -739,40 +895,41 @@ df = slippage_rounding_revenue(df)
 df = yields(df)
 df.to_csv('118.csv')
 
+
 def calculate_roll_revenue(df):
     df['roll_profit'] = 0
     i = 0
     while i < len(df) - 1:
-        if df.iloc[i]['roll_signal'] == 1 and df.iloc[i+1]['roll_signal'] == 1:
+        if df.iloc[i]['roll_signal'] == 1 and df.iloc[i + 1]['roll_signal'] == 1:
             A1 = df.iloc[i]['actual_net_value_change'] - df.iloc[i]['theo_net_value_change']
-            A2 = df.iloc[i+1]['actual_net_value_change'] - df.iloc[i+1]['theo_net_value_change']
+            A2 = df.iloc[i + 1]['actual_net_value_change'] - df.iloc[i + 1]['theo_net_value_change']
             A = A1 + A2
-            B = df.iloc[i]['actual_piece_change'] + df.iloc[i+1]['actual_piece_change']
+            B = df.iloc[i]['actual_piece_change'] + df.iloc[i + 1]['actual_piece_change']
             C1 = df.iloc[i]['actual_piece_change']
-            C2 = df.iloc[i+1]['actual_piece_change']
-            roll_revenue1=0
-            roll_revenue2=0
+            C2 = df.iloc[i + 1]['actual_piece_change']
+            roll_revenue1 = 0
+            roll_revenue2 = 0
             # print(A, C1,C2,B,A2)
-            if C1 > 0 and C2 < 0:
+            if C1 > 0 > C2:
                 if B > 0:
                     # i行的值按B/C1倍数更新
                     df.loc[i, ['commission', 'slippage_profit', 'round_profit']] *= B / C1
                     # i+1行的值设为0
-                    df.loc[i+1, ['commission', 'slippage_profit', 'round_profit']] = 0
+                    df.loc[i + 1, ['commission', 'slippage_profit', 'round_profit']] = 0
                     roll_revenue1 = A1 - B / C1 * A1
                     roll_revenue2 = A2
                 else:
                     # i+1行的值按B/C2倍数更新
-                    df.loc[i+1, ['commission', 'slippage_profit', 'round_profit']] *= B / C2
+                    df.loc[i + 1, ['commission', 'slippage_profit', 'round_profit']] *= B / C2
                     # i行的值设为0
                     df.loc[i, ['commission', 'slippage_profit', 'round_profit']] = 0
                     # roll_revenue = A - B / C2 * A2
                     roll_revenue1 = A1 - B / C1 * A1
                     roll_revenue2 = A2
-            elif C1 < 0 and C2 > 0:
+            elif C1 < 0 < C2:
                 if B > 0:
                     # i+1行的值按B/C2倍数更新
-                    df.loc[i+1, ['commission', 'slippage_profit', 'round_profit']] *= B / C2
+                    df.loc[i + 1, ['commission', 'slippage_profit', 'round_profit']] *= B / C2
                     # i行的值设为0
                     df.loc[i, ['commission', 'slippage_profit', 'round_profit']] = 0
                     # roll_revenue = A - B / C2 * A2
@@ -782,13 +939,13 @@ def calculate_roll_revenue(df):
                     # i行的值按B/C1倍数更新
                     df.loc[i, ['commission', 'slippage_profit', 'round_profit']] *= B / C1
                     # i+1行的值设为0
-                    df.loc[i+1, ['commission', 'slippage_profit', 'round_profit']] = 0
+                    df.loc[i + 1, ['commission', 'slippage_profit', 'round_profit']] = 0
                     # roll_revenue = A - B / C1 * A1
                     roll_revenue1 = A1 - B / C1 * A1
                     roll_revenue2 = A2
 
             df.loc[i, 'roll_profit'] = roll_revenue1
-            df.loc[i+1, 'roll_profit'] = roll_revenue2
+            df.loc[i + 1, 'roll_profit'] = roll_revenue2
 
             i += 2
         else:
@@ -797,40 +954,46 @@ def calculate_roll_revenue(df):
         df.drop(columns=['Unnamed: 0'], inplace=True)
     return df
 
+
 def drawdown(df):
     df['current_max'] = df['theo_net_value'].cummax()
     df['current_drawdown'] = (df['theo_net_value'] - df['current_max']) / df['current_max']
- # 创建 max_time 列记录之前的最大值出现的时间
+
+    # 创建 max_time 列记录之前的最大值出现的时间
     def find_max_time(row):
         max_rows = df[df['theo_net_value'].cummax() == row['current_max']]
         if not max_rows.empty:
             return max_rows['date'].iloc[0]
         return None
+
     # df['start_time'] = df.apply(lambda row: df.loc[df['theo_net_value'].cummax()== row['current_max'], 'date'], axis=1)
     df['max_time'] = df.apply(find_max_time, axis=1)
-    df['total_pnl'] = df['theo_net_value']-initial_capital
+    df['total_pnl'] = df['theo_net_value'] - initial_capital
     return df
 
 
 df = calculate_roll_revenue(df)
 df = drawdown(df)
 
-# df.to_csv('119.csv')
 
+# df.to_csv('119.csv')
 
 
 def net_value_table(df):
     selected_columns = [
-        'date', 'daynight', 'total_pnl', 'actual_net_value', 'theo_net_value','theo_net_value2','actual_net_value2',
+        'date', 'daynight', 'total_pnl', 'actual_net_value', 'theo_net_value', 'theo_net_value2', 'actual_net_value2',
         'commission', 'slippage_profit', 'round_profit', 'roll_profit',
         'theo_net_value_change', 'theo_yields', 'actual_yields', 'current_drawdown'
     ]
 
     net_value_df = df.loc[:, selected_columns]
     return net_value_df
-net_value_df= net_value_table(df)
-# net_value_df.to_csv('净值表格0815.csv')
 
+
+net_value_df = net_value_table(df)
+
+
+# net_value_df.to_csv('净值表格0815.csv')
 
 
 # 先修改三个最大回撤的计算
@@ -847,7 +1010,7 @@ def find_top_drawdowns(df, top_n=3):
     for i, row in enumerate(top_drawdowns.itertuples(), start=1):
         # 获取下一个 max_time 的日期作为 end_date
         next_max_time = df[df['date'] >= row.date]['max_time'].drop_duplicates().iloc[1]
-            # if not df[df['date'] > row.date]['max_time'].drop_duplicates().empty else None
+        # if not df[df['date'] > row.date]['max_time'].drop_duplicates().empty else None
 
         start_date_str = str(int(row.max_time))
         end_date_str = str(int(next_max_time)) if next_max_time is not None else None
@@ -856,7 +1019,7 @@ def find_top_drawdowns(df, top_n=3):
         results.append({
             'index': ['max', 'second', 'third'][i - 1],
             'ratio': row.current_drawdown,
-            'start_date': start_date_str ,
+            'start_date': start_date_str,
             'end_date': end_date_str
         })
 
@@ -864,6 +1027,7 @@ def find_top_drawdowns(df, top_n=3):
     drawdown_df = pd.DataFrame(results)
 
     return drawdown_df
+
 
 def calculate_ratios(df):
     # 计算年化收益率、年化波动率、夏普比率、索提诺比率
@@ -875,7 +1039,7 @@ def calculate_ratios(df):
     first_valid_index = df['theo_net_value2'].first_valid_index()
     last_valid_index = df['theo_net_value2'].last_valid_index()
     annual_return = (df['theo_net_value2'].iloc[last_valid_index] / df['theo_net_value2'].iloc[first_valid_index]) ** (
-                240 / len(df['date'].unique())) - 1
+            240 / len(df['date'].unique())) - 1
 
     # 年化波动率
     annual_volatility = df['return'].std() * np.sqrt(240)
@@ -895,9 +1059,12 @@ def calculate_ratios(df):
 
     return ratio_df
 
+
 ratio_df = calculate_ratios(df)
 
 print(ratio_df)
+
+
 def get_daily_df(df):
     df['date'] = pd.to_datetime(df['date'], format='%Y%m%d')
 
@@ -946,6 +1113,8 @@ def get_daily_df(df):
     if 'Unnamed: 0' in daily_df.columns:
         daily_df.drop(columns=['Unnamed: 0'], inplace=True)
     return daily_df
+
+
 def win_rate(daily_df):
     # 胜率,
     # Convert date column to datetime format
@@ -983,6 +1152,7 @@ def win_rate(daily_df):
 
     return summary
 
+
 # 交易频率和平均持仓天数
 def calculate_trading_frequency(df):
     # 筛选roll_signal等于0的行
@@ -1001,10 +1171,11 @@ def calculate_trading_frequency(df):
     days_hold = 1 / trades_per_day if trades_per_day > 0 else float('inf')
 
     frequency = pd.DataFrame({
-        'average_trades_per_day':[trades_per_day],
+        'average_trades_per_day': [trades_per_day],
         'average_days_hold': [days_hold]
     })
     return frequency
+
 
 drawdown_df = find_top_drawdowns(df)
 frequency = calculate_trading_frequency(df)
@@ -1015,8 +1186,8 @@ daily_df = get_daily_df(df)
 win = win_rate(daily_df)
 print(win)
 
-
 print(drawdown_df)
+
 
 # 绘图
 def plot_net_value_and_drawdown(daily_df):
@@ -1029,7 +1200,8 @@ def plot_net_value_and_drawdown(daily_df):
 
     # 设置纵轴坐标位置，靠下放置
     ax1.spines['left'].set_position(('outward', 50))
-    ax1.set_ylim([min(daily_df['actual_net_value2'].min(), daily_df['theo_net_value2'].min())*0.95, max(daily_df['actual_net_value2'].max(), daily_df['theo_net_value2'].max()) * 1.05])
+    ax1.set_ylim([min(daily_df['actual_net_value2'].min(), daily_df['theo_net_value2'].min()) * 0.95,
+                  max(daily_df['actual_net_value2'].max(), daily_df['theo_net_value2'].max()) * 1.05])
 
     # 设置横轴的日期格式
     ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y%m%d'))
@@ -1062,7 +1234,8 @@ def plot_net_value_and_drawdown(daily_df):
 
         # 填充两个竖线之间的区域
         ax1.fill_betweenx(
-            y=[min(daily_df['actual_net_value2'].min(), daily_df['theo_net_value2'].min())*0.95, max(daily_df['actual_net_value2'].max(), daily_df['theo_net_value2'].max()) * 1.05],
+            y=[min(daily_df['actual_net_value2'].min(), daily_df['theo_net_value2'].min()) * 0.95,
+               max(daily_df['actual_net_value2'].max(), daily_df['theo_net_value2'].max()) * 1.05],
             x1=start, x2=end,
             color='gray', alpha=0.1
         )
@@ -1074,6 +1247,7 @@ def plot_net_value_and_drawdown(daily_df):
 
     # 显示图形
     plt.show()
+
 
 # plot_net_value_and_drawdown(df)
 
@@ -1131,7 +1305,7 @@ def plot_net_value_and_drawdown_html(daily_df, drawdown_df):
 
 # 生成 HTML 文件
 # 图表加滚轮，比率数据保留四位小数
-def generate_html(daily_df, drawdown_df, ratio_df, frequency, win, drawdown_df_2):
+def generate_html(daily_df, drawdown_df, ratio_df, frequency, win):
     # 绘制图表
     fig = plot_net_value_and_drawdown_html(daily_df, drawdown_df)
     fig_html = pio.to_html(fig, full_html=False)
@@ -1164,7 +1338,7 @@ def generate_html(daily_df, drawdown_df, ratio_df, frequency, win, drawdown_df_2
             <h3 class="chinese">Win rate </h3>
             {win.to_html(index=False)}
             <h3 class="chinese">Drawdown </h3>
-            {drawdown_df_2.to_html(index=False)}
+            {drawdown_df.to_html(index=False)}
         </div>
     </body>
     </html>
@@ -1175,5 +1349,7 @@ def generate_html(daily_df, drawdown_df, ratio_df, frequency, win, drawdown_df_2
         file.write(html_content)
 
     print("HTML report generated successfully.")
+
+
 #
-generate_html(df, drawdown_df, ratio_df, frequency, win, drawdown_df)
+generate_html(df, drawdown_df, ratio_df, frequency, win)
