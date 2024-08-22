@@ -12,25 +12,7 @@ from io import BytesIO
 import pdfkit
 from connect_wind import ConnectDatabase
 
-class get_information(ConnectDatabase):
-    def __init__(self):
 
-        # self.future_symbol = future_symbol  #例 铜CU(大写)
-        # b
-        self.sql = f'''
-                       SELECT S_INFO_WINDCODE, S_INFO_CODE, S_INFO_PUNIT, S_INFO_FTMARGINS, S_INFO_MAXPRICEFLUCT
-                       FROM CFUTURESCONTPRO
-                       '''
-
-        super().__init__(self.sql)
-        self.df = super().get_data()
-
-    def run(self):
-
-        return self.df
-
-im = get_information()
-temp = im.run()
 
 comm_dict  = {
     # 类型，开仓，平仓，平今手续费
@@ -50,17 +32,59 @@ margin_dict = {
 multi_dict = {
     'BR': 5
 }
-class backtest:
+
+# class get_information(ConnectDatabase):
+#     def __init__(self,symbol):
+#
+#         self.sql = f'''
+#                        SELECT S_INFO_WINDCODE, MARGINRATIO, TRADE_DT
+#                        FROM CFUTURESMARGINRATIO
+#                        WHERE TRADE_DT >= 20100101
+#                        AND S_INFO_WINDCODE LIKE '{symbol}%'
+#                        '''
+#
+#         super().__init__(self.sql)
+#         self.df = super().get_data()
+#
+#     def run(self):
+#
+#         return self.df
+
+class backtest(ConnectDatabase):
     def __init__(self, symbol: str, initial_capital: int, leverage: float, signal_df, start_date, end_date):
+
+        self.margin_sql = f'''
+                       SELECT S_INFO_WINDCODE, MARGINRATIO, TRADE_DT
+                       FROM CFUTURESMARGINRATIO
+                       WHERE TRADE_DT >= 20100101
+                       AND S_INFO_WINDCODE LIKE '{symbol}%'
+                       '''
+        self.multi_sql = f'''
+                             SELECT S_INFO_CODE, S_INFO_PUNIT
+                             FROM  CFUTURESCONTPRO
+                             WHERE S_INFO_CODE LIKE '{symbol}%'
+                             '''
+
+        super().__init__(self.margin_sql)
+        self.margin_df = super().get_data()
+
+        self.sql = self.multi_sql
+        multi_df = super().get_data()
+        multi_df = multi_df[multi_df['S_INFO_CODE']==symbol]
+        if not multi_df.empty:
+            self.multi = int(multi_df.iloc[0]['S_INFO_PUNIT'])
+        else:
+            raise ValueError(f"No matching S_INFO_CODE found for symbol: {symbol}")
         self.symbol = symbol
         self.df = signal_df
         self.leverage = leverage
-        self.margin = margin_dict[symbol]
+        # self.margin = margin_dict[symbol]
         self.comm_dict = comm_dict
-        self.multi = multi_dict[symbol]
+        # self.multi = multi_dict[symbol]
         self.start_date = start_date
         self.end_date = end_date
-        self.initial_capital= initial_capital
+        self.initial_capital = initial_capital
+
     def calculate_operation(self):
         """
         输入：包含信号的dataframe,start_date:yyyymmdd,end_date: yyyymmdd.
@@ -189,7 +213,7 @@ class backtest:
         # 定义wap结果表格所在目录
         symbol = self.symbol
         df = self.df
-        wap_dir = r'Z:\temporary\Steiner\data_wash\linux_so\py311\temp'
+        wap_dir = r'Z:\temporary\Steiner\data_wash\linux_so\py311\wap_results_oi'
 
         # 查找符合symbol的wap结果文件
         wap_file = [file for file in os.listdir(wap_dir) if
@@ -309,9 +333,6 @@ class backtest:
         df[['base_price', 'open', 'prev_close', 'tradable']] = snapshoot_data[
             ['last_prc', 'open', 'prev_close', 'tradable']]
 
-        df['slippage'] = df.apply(
-            lambda x: x['trade_price'] - x['base_price'] if pd.notnull(x['trade_price']) and pd.notnull(
-                x['base_price']) else None, axis=1)
 
         df['close'] = df.groupby('contract')['prev_close'].shift(-1)
 
@@ -319,6 +340,10 @@ class backtest:
             df.drop(columns=['Unnamed: 0'], inplace=True)
         self.df =df
         return self.df
+
+
+
+
 
     def add_settle_prc(self):
         """
@@ -656,18 +681,60 @@ class backtest:
         计算保证金的占用情况
         输出：df
         '''
-
-        # 获取对应品种的保证金费率
-        symbol = self.symbol
-        initial_capital = self.initial_capital
         df = self.df
-        margin_rate = margin_dict.get(symbol, 0)
+        margin_df = self.margin_df
+        df['date'] = df['date'].astype(str)
+        margin_df['TRADE_DT'] = margin_df['TRADE_DT'] .astype(str)
+
+        # 合并数据框，使用日期和合约代码作为键
+        merged_df = pd.merge(
+            df,
+            margin_df[['S_INFO_WINDCODE', 'TRADE_DT', 'MARGINRATIO']],
+            left_on=['contract', 'date'],
+            right_on=['S_INFO_WINDCODE', 'TRADE_DT'],
+            how='left'
+        )
+
+        # 删除多余的合并键
+        merged_df.drop(columns=['S_INFO_WINDCODE', 'TRADE_DT'], inplace=True)
+
+        merged_df['MARGINRATIO'].fillna(method='ffill', inplace=True)
+
+        # 填充剩余空值：对每个合约，使用第一个非空值进行填充
+        def fill_first_pct_chg_limit(row, merged_df, unmatched_contracts):
+            if pd.isna(row['MARGINRATIO']):
+                matching_rows = merged_df.loc[merged_df['S_INFO_WINDCODE'] == row['contract'], 'MARGINRATIO']
+                if not matching_rows.empty:
+                    return matching_rows.iloc[0]
+                else:
+                    unmatched_contracts.append(row['contract'])
+                    return pd.NA  # 如果找不到匹配项，返回 NaN
+            return row['MARGINRATIO']
+
+        merged_df['MARGINRATIO'].fillna(method='bfill', inplace=True)
+        unmatched_contracts = []
+        merged_df['MARGINRATIO'] = merged_df.apply(
+            lambda row: fill_first_pct_chg_limit(row, margin_df, unmatched_contracts), axis=1)
+
+        if unmatched_contracts:
+            print(f"未找到匹配项的 contract: {set(unmatched_contracts)}")
+
+        merged_df['MARGINRATIO'] = merged_df['MARGINRATIO'].astype(int)
+        merged_df['MARGINRATIO'] = merged_df['MARGINRATIO'] / 100
+
+        # 将列重命名为 'limit'
+        merged_df.rename(columns={'MARGINRATIO': 'margin_rate'}, inplace=True)
+
+        df = merged_df
+        # 获取对应品种的保证金费率
+        initial_capital = self.initial_capital
+
 
         # 计算空闲资金数量
-        df['free_capital'] = initial_capital - df['actual_pieces'].abs() * df['settle_prc'] * margin_rate
+        df['free_capital'] = initial_capital - df['actual_pieces'].abs() * df['settle_prc'] * df['margin_rate']
 
         # 计算保证金占用比例
-        df['margin_ratio'] = 1 - df['free_capital'] / initial_capital
+        df['occupied_margin_ratio'] = 1 - df['free_capital'] / initial_capital
         if 'Unnamed: 0' in df.columns:
             df.drop(columns=['Unnamed: 0'], inplace=True)
         self.df = df
@@ -885,37 +952,7 @@ class backtest:
 
         return drawdown_df
 
-    def calculate_ratios(self):
-        df = self.df
-        # 计算年化收益率、年化波动率、夏普比率、索提诺比率
-        df['theo_net_value2'] = df['theo_net_value2'].astype(float)
-        df['return'] = df['theo_net_value2'].pct_change(fill_method=None)
-        df['return'] = df['return'].fillna(0)
 
-        # 年化收益率
-        first_valid_index = df['theo_net_value2'].first_valid_index()
-        last_valid_index = df['theo_net_value2'].last_valid_index()
-        annual_return = (df['theo_net_value2'].iloc[last_valid_index] / df['theo_net_value2'].iloc[
-            first_valid_index]) ** (
-                                240 / len(df['date'].unique())) - 1
-
-        # 年化波动率
-        annual_volatility = df['return'].std() * np.sqrt(240)
-
-        # 夏普比率
-        sharpe_ratio = annual_return / annual_volatility
-
-        # 索提诺比率
-        sortino_ratio = annual_return / (df['return'][df['return'] < 0].std() * np.sqrt(240))
-
-        ratio_df = pd.DataFrame({
-            'Annual_Return': [annual_return],
-            'Annual_Volatility': [annual_volatility],
-            'Sharpe_Ratio': [sharpe_ratio],
-            'Sortino_Ratio': [sortino_ratio]
-        })
-
-        return ratio_df
 
     def get_daily_df(self):
         df = self.df
@@ -945,7 +982,7 @@ class backtest:
             actual_init_price=('actual_init_price', 'mean'),
             theo_init_price=('theo_init_price', 'mean'),
             free_capital=('free_capital', 'last'),
-            margin_ratio=('margin_ratio', 'last'),
+            margin_ratio=('occupied_margin_ratio', 'last'),
             actual_net_value_change=('actual_net_value_change', 'sum'),
             theo_net_value_change=('theo_net_value_change', 'sum'),
             actual_net_value=('actual_net_value', 'last'),
@@ -954,6 +991,7 @@ class backtest:
             theo_net_value2=('theo_net_value2', 'last'),
             slippage_profit=('slippage_profit', 'sum'),
             round_profit=('round_profit', 'sum'),
+            theo_yields=('theo_yields', lambda x: np.prod(1 + x) - 1),
             actual_yields=('actual_yields', lambda x: np.prod(1 + x) - 1),
             roll_profit=('roll_profit', 'sum'),
             current_max=('current_max', 'max'),
@@ -967,6 +1005,36 @@ class backtest:
             daily_df.drop(columns=['Unnamed: 0'], inplace=True)
         return daily_df
 
+    def calculate_ratios(self,daily_df):
+
+        # 计算年化收益率、年化波动率、夏普比率、索提诺比率
+        daily_df['theo_net_value2'] = daily_df['theo_net_value2'].astype(float)
+
+
+        # 年化收益率
+        first_valid_index = daily_df['theo_net_value2'].first_valid_index()
+        last_valid_index = daily_df['theo_net_value2'].last_valid_index()
+        annual_return = (daily_df['theo_net_value2'].iloc[last_valid_index] / daily_df['theo_net_value2'].iloc[
+            first_valid_index]) ** (
+                                250 / len(daily_df['date'].unique())) - 1
+
+        # 年化波动率
+        annual_volatility = daily_df['theo_yields'].std() * np.sqrt(240)
+
+        # 夏普比率
+        sharpe_ratio = annual_return / annual_volatility
+
+        # 索提诺比率
+        sortino_ratio = annual_return / (daily_df['theo_yields'][daily_df['theo_yields'] < 0].std() * np.sqrt(250))
+
+        ratio_df = pd.DataFrame({
+            'Annual_Return': [annual_return],
+            'Annual_Volatility': [annual_volatility],
+            'Sharpe_Ratio': [sharpe_ratio],
+            'Sortino_Ratio': [sortino_ratio]
+        })
+
+        return ratio_df
     def win_rate(self,daily_df):
 
         # 胜率,
@@ -985,13 +1053,13 @@ class backtest:
         # Resample to calculate weekly metrics
         weekly_agg = daily_df.resample('W-MON', on='date').agg(
             weekly_pnl_sum=('daily_pnl_sum', 'sum'),
-            weekly_yields_mean=('daily_yields', 'mean')
+            weekly_yields_sum=('daily_yields', 'sum')
         ).reset_index()
 
         total_weeks = weekly_agg['weekly_pnl_sum'].ne(0).sum()  # Count of non-zero PnL weeks
         win_weeks = weekly_agg['weekly_pnl_sum'].gt(0).sum()  # Count of profitable weeks
         weekly_win_rate = win_weeks / total_weeks if total_weeks > 0 else 0
-        weekly_expected_return = weekly_agg['weekly_yields_mean'].mean()
+        weekly_expected_return = weekly_agg['weekly_yields_sum'].mean()
 
         # Create summary DataFrame
         summary = pd.DataFrame({
@@ -1062,28 +1130,42 @@ class backtest:
         #     yaxis2=dict(title='Drawdown', overlaying='y', side='right', range=[-1, 0]),
         #     font=dict(family="Arial, sans-serif", size=12),
         # )
+        # 设置图表布局以同时支持横向和纵向缩放
         fig.update_layout(
-            title=dict(text="Net Value Curve", font=dict(size=18)),  # 修改标题样式
-            xaxis_title='Date',
-            yaxis_title='Net Value',
+            title=dict(text="Net Value Curve", font=dict(size=18)),
+            xaxis=dict(
+                rangeslider=dict(visible=True),
+                rangemode='normal',
+                scaleanchor="y" , # 横轴和纵轴按比例缩放
+                scaleratio = 1,  # 确保缩放比例一致
+        ),
+            yaxis=dict(
+                rangemode='normal',
+                scaleanchor="x",  # 纵轴和横轴按比例缩放
+                scaleratio=1,  # 确保缩放比例一致
+                fixedrange=False,  # 确保y轴可以缩放
+            ),
             yaxis2=dict(title='Drawdown', overlaying='y', side='right', range=[-1, 0]),
+            dragmode='zoom',
             font=dict(family="Arial, sans-serif", size=12),
-            plot_bgcolor='rgba(245, 245, 245, 1)',  # 调浅底色
+            plot_bgcolor='rgba(245, 245, 245, 1)',
             legend=dict(
                 x=0.85, y=1,
                 traceorder='normal',
                 font=dict(size=10),
                 bgcolor='rgba(0,0,0,0)'
-            )
+            ),
         )
-        return fig
 
+        return fig
     # 生成 HTML 文件
     # 图表加滚轮，比率数据保留四位小数
     def generate_html(self, daily_df, drawdown_df, ratio_df, frequency, win, ):
         # 绘制图表
         fig = self.plot_net_value_and_drawdown_html(daily_df, drawdown_df)
-        fig_html = pio.to_html(fig, full_html=False)
+        config = {'scrollZoom': True}
+
+        fig_html = pio.to_html(fig, full_html=False, config=config)
 
         # 构造HTML文件的内容
         html_content = f"""
@@ -1093,7 +1175,7 @@ class backtest:
             <style>
                 body {{ font-family: Arial, sans-serif; }}
                 h1 {{ text-align: center; }}
-                table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+                table {{ width: 80%; border-collapse: collapse; margin: 20px 0; }}
                 th, td {{ padding: 8px 12px; text-align: left; border-bottom: 1px solid #ddd; }}
                 th {{ background-color: #f2f2f2; }}
                 .indicator-section {{ margin: 30px 0; }}
@@ -1135,6 +1217,7 @@ class backtest:
         self.df = self.add_snapshoot()
         self.df = self.add_settle_prc()
         self.df = self.correct_trade()
+        self.df = self.slippage()
         self.df = self.fill_number()
         self.df = self.slippage()
         self.df = self.operation_type()
@@ -1149,7 +1232,7 @@ class backtest:
         net_value_df = self.net_value_table()
         drawdown_df = self.find_top_drawdowns()
         daily_df = self.get_daily_df()
-        ratio_df = self.calculate_ratios()
+        ratio_df = self.calculate_ratios(daily_df)
         win_df = self.win_rate(daily_df)
         frequency_df = self.calculate_trading_frequency()
         self.generate_html(self.df, drawdown_df, ratio_df, frequency_df, win_df)
@@ -1159,9 +1242,10 @@ class backtest:
         return self.df, net_value_df
 
 
+
 if __name__ == '__main__':
     signal_df = pd.read_csv('001.csv')
     bt = backtest('BR', 1000000, 2, signal_df, '20220101', '20240630')
-    df, net_value_df, html_content = bt.run_backtest()
-
+    df, net_value_df = bt.run_backtest()
+    df.to_csv('120.csv')
 
