@@ -27,6 +27,13 @@ def get_logger_quote_wash(name, debug=False):
 # 如果是.CZC，需要补全合约代码
 
 class DataProcessor:
+    '''
+    解析品种开盘时间，去除开盘时间之外的数据，将开盘时间范围内的数据清洗成500ms标准刻度的quote数据。
+将品种数据
+需要读取\\samba-1.quantchina.pro\quanyi4g\temporary\Steiner\data_wash\linux_so\py311\future_information.csv，获得品种的开盘时间
+输入：期货品种代码，每天的quote数据
+输出：清洗后的quote数据
+    '''
     def __init__(self, future_index, opening_hours_file='future_information.csv', debug=False):
         self.future_index = future_index
         self.opening_hours_df = pd.read_csv(opening_hours_file)
@@ -45,8 +52,6 @@ class DataProcessor:
 
         if 'last_prc' in day_quote.columns and 'open_interest' in day_quote.columns:
             day_quote = day_quote[(day_quote['last_prc'] != 0) & (day_quote['open_interest'] != 0)]
-
-
 
         # 新建time列和date列保持格式统一
         day_quote['datetime'] = pd.to_datetime(day_quote['datetime'])
