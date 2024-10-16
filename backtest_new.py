@@ -84,6 +84,15 @@ def correct_czc_code(contract, trading_date):
         return corrected_contract
     return contract
 class backtest(ConnectDatabase):
+    '''
+    回测。从wind表格中读取每一手张数、保证金比例。
+    程序内置手续费数据。
+    需要读取/nas92/temporary/Steiner/data_wash/linux_so/py311/essentialcontract/中的主力合约数据来确定每天交易的合约。
+    定义交易的主力合约：如果连续两天是主力合约，则从第三天开始开始交易该合约。
+
+    输入：品种代码，初始资金，杠杆率，信号df（包括date, daynight, position三列），因子名称，输出路径，起始和结束日期（可选，默认全信号周期回测）。
+    输出：summary和detail的每天交易净值表格，html报告，夏普率（可删除），
+    '''
     def __init__(self, symbol: str, initial_capital: int, leverage: float, signal_df, factor_name, output_path,
                  start_date=None, end_date=None):
 
