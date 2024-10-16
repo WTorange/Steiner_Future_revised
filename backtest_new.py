@@ -366,36 +366,36 @@ class backtest(ConnectDatabase):
         self.df = df
         return self.df
 
-    def add_snapshoot(self):
+    def add_snapshot(self):
         """
-        根据symbol添加snapshoot数据库中的信息
+        根据symbol添加snapshot数据库中的信息
         输出：添加了可交易标签、base_price，开盘价，前收和收盘价
         """
         symbol = self.symbol
         df = self.df
         # 设置文件夹路径
-        snapshoot_dir = '/nas92/temporary/Steiner/data_wash/linux_so/py311/snapshoot_oi_temp/'
-        index_snapshoot_dir = '/nas92/temporary/Steiner/data_wash/linux_so/py311/snapshoot_index_temp/'
+        snapshot_dir = '/nas92/temporary/Steiner/data_wash/linux_so/py311/snapshot_oi_temp/'
+        index_snapshot_dir = '/nas92/temporary/Steiner/data_wash/linux_so/py311/snapshot_index_temp/'
 
         # 找到符合条件的 CSV 文件
-        files = [f for f in os.listdir(snapshoot_dir) if f.startswith(symbol + '_') and f.endswith('_results.csv')]
+        files = [f for f in os.listdir(snapshot_dir) if f.startswith(symbol + '_') and f.endswith('_results.csv')]
         if not files:
             raise FileNotFoundError(f"No CSV file found for symbol: {symbol}")
 
-        index_files = [f for f in os.listdir(index_snapshoot_dir) if
+        index_files = [f for f in os.listdir(index_snapshot_dir) if
                        f.startswith(symbol + '_') and f.endswith('_results.csv')]
         if not index_files:
             raise FileNotFoundError(f"No CSV file found for symbol: {symbol}")
 
-        # 读取对应的 snapshoot_df
-        snapshoot_df = pd.read_csv(os.path.join(snapshoot_dir, files[0]))
-        index_snapshoot_df = pd.read_csv(os.path.join(index_snapshoot_dir, index_files[0]))
+        # 读取对应的 snapshot_df
+        snapshot_df = pd.read_csv(os.path.join(snapshot_dir, files[0]))
+        index_snapshot_df = pd.read_csv(os.path.join(index_snapshot_dir, index_files[0]))
 
         # 过滤掉 query_notrade 为 1 的行
-        snapshoot_df = snapshoot_df[snapshoot_df['query_notrade'] != 1]
+        snapshot_df = snapshot_df[snapshot_df['query_notrade'] != 1]
 
-        snapshoot_df['time'] = pd.to_datetime(snapshoot_df['query_time']).dt.time
-        index_snapshoot_df['time'] = pd.to_datetime(index_snapshoot_df['query_time']).dt.time
+        snapshot_df['time'] = pd.to_datetime(snapshot_df['query_time']).dt.time
+        index_snapshot_df['time'] = pd.to_datetime(index_snapshot_df['query_time']).dt.time
         # 定义匹配时间
         day_time = pd.to_datetime('14:30:00').time()
         night_time = pd.to_datetime('22:30:00').time()
@@ -407,7 +407,7 @@ class backtest(ConnectDatabase):
         df['tradable'] = None
         df['close'] = None
         # 定义一个辅助函数进行匹配
-        def match_snapshoot_data(row, snapshoot_df):
+        def match_snapshot_data(row, snapshot_df):
             """
             根据日期和交易合约匹配快照文件中的数据
             """
@@ -419,42 +419,42 @@ class backtest(ConnectDatabase):
             try:
                 # 尝试根据交易日期和合约进行匹配
                 contract = row['contract']
-                matched_snapshoot_df = snapshoot_df[
-                    (snapshoot_df['trading_date'] == trading_date) & (snapshoot_df['contract'] == contract)]
+                matched_snapshot_df = snapshot_df[
+                    (snapshot_df['trading_date'] == trading_date) & (snapshot_df['contract'] == contract)]
 
                 # 根据 daynight 列的值选择合适的 time 进行匹配
                 if daynight == 'day':
-                    matched_row = matched_snapshoot_df[matched_snapshoot_df['time'] == day_time]
+                    matched_row = matched_snapshot_df[matched_snapshot_df['time'] == day_time]
                 else:
-                    matched_row = matched_snapshoot_df[matched_snapshoot_df['time'] == night_time]
+                    matched_row = matched_snapshot_df[matched_snapshot_df['time'] == night_time]
 
                 if not matched_row.empty:
                     return matched_row[['last_prc', 'open', 'prev_close', 'close','tradable']].iloc[0]
                 return pd.Series([None, None, None,None, None], index=['last_prc', 'open', 'prev_close', 'close','tradable'])
 
             except KeyError:
-                # 如果 contract 列不存在，说明是指数snapshoot。只根据交易日期进行匹配
-                matched_snapshoot_df = snapshoot_df[snapshoot_df['trading_date'] == trading_date]
+                # 如果 contract 列不存在，说明是指数snapshot。只根据交易日期进行匹配
+                matched_snapshot_df = snapshot_df[snapshot_df['trading_date'] == trading_date]
 
                 # 根据 daynight 列的值选择合适的 time 进行匹配
                 if daynight == 'day':
-                    matched_row = matched_snapshoot_df[matched_snapshoot_df['time'] == day_time]
+                    matched_row = matched_snapshot_df[matched_snapshot_df['time'] == day_time]
                 else:
-                    matched_row = matched_snapshoot_df[matched_snapshoot_df['time'] == night_time]
+                    matched_row = matched_snapshot_df[matched_snapshot_df['time'] == night_time]
 
                 if not matched_row.empty:
                     return matched_row[['last_prc', 'open', 'prev_close','close']].iloc[0]
                 return pd.Series([None, None, None,None], index=['last_prc', 'open', 'prev_close','close'])
 
         # 应用辅助函数匹配 'base_price'，open, pre_close, close
-        snapshoot_data = df.apply(match_snapshoot_data, axis=1, snapshoot_df=snapshoot_df)
+        snapshot_data = df.apply(match_snapshot_data, axis=1, snapshot_df=snapshot_df)
 
-        index_snapshoot_data = df.apply(match_snapshoot_data, axis=1, snapshoot_df=index_snapshoot_df)
-        # print(snapshoot_data)
-        df[['base_price', 'open', 'prev_close','close', 'tradable']] = snapshoot_data[
+        index_snapshot_data = df.apply(match_snapshot_data, axis=1, snapshot_df=index_snapshot_df)
+        # print(snapshot_data)
+        df[['base_price', 'open', 'prev_close','close', 'tradable']] = snapshot_data[
             ['last_prc', 'open', 'prev_close', 'close','tradable']]
 
-        df[['index_base_price', 'index_open', 'index_prev_close','index_close']] = index_snapshoot_data[
+        df[['index_base_price', 'index_open', 'index_prev_close','index_close']] = index_snapshot_data[
             ['last_prc', 'open', 'prev_close','close']]
 
         df['prev_close'] = df.groupby('contract')['close'].shift(1)
@@ -602,7 +602,7 @@ class backtest(ConnectDatabase):
         df['index_prev_close'] = df['index_prev_close'].fillna(df['index_close'].shift(1))
 
         # 填充 trade_price, base_price, open, prev_close 中的0值和空值
-        cols_to_fill = ['trade_price', 'base_price', 'open', 'prev_close','close','settle_prc','index_base_price','close']
+        cols_to_fill = ['trade_price', 'base_price', 'open', 'prev_close','close','settle_prc','index_base_price','close','index_prev_close','index_close',]
         for col in cols_to_fill:
             df[col] = df[col].replace(0, np.nan)  # 将0替换为NaN
             df[col] = df[col].fillna(method='ffill')  # 用前一个非0、非空值填充
@@ -989,9 +989,9 @@ class backtest(ConnectDatabase):
                     theo_free = prev_row['theo_free'] - base_price * theo_piece_change
                     index_free = prev_row['index_free'] - index_base_price * index_piece_change
 
-                    df.at[i, 'actual_stage_value'] = actual_free + close * row['actual_pieces']
-                    df.at[i, 'theo_stage_value'] = theo_free + close * row['theo_pieces']
-                    df.at[i, 'index_stage_value'] = index_free + index_close * row['index_pieces']
+                    df.at[i, 'actual_stage_value'] = actual_free + close * actual_pieces
+                    df.at[i, 'theo_stage_value'] = theo_free + close * theo_pieces
+                    df.at[i, 'index_stage_value'] = index_free + index_close * index_pieces
 
                     df.at[i, 'actual_free'] = actual_free
                     df.at[i, 'theo_free'] = theo_free
@@ -1014,9 +1014,9 @@ class backtest(ConnectDatabase):
                     theo_free = prev_row['theo_free'] - base_price * theo_piece_change
                     index_free = prev_row['index_free'] - index_base_price * index_piece_change
 
-                    df.at[i, 'actual_stage_value'] = actual_free + trade_price * row['actual_pieces']
-                    df.at[i, 'theo_stage_value'] = theo_free + base_price * row['theo_pieces']
-                    df.at[i, 'index_stage_value'] = index_free + index_base_price * row['index_pieces']
+                    df.at[i, 'actual_stage_value'] = actual_free + close * actual_pieces
+                    df.at[i, 'theo_stage_value'] = theo_free + close * theo_pieces
+                    df.at[i, 'index_stage_value'] = index_free + index_close * index_pieces
 
                     df.at[i, 'actual_free'] = actual_free
                     df.at[i, 'theo_free'] = theo_free
@@ -1461,7 +1461,7 @@ class backtest(ConnectDatabase):
             'Sortino_Ratio': [sortino_ratio]
         }).round(4)
 
-        return ratio_df
+        return ratio_df, sharpe_ratio
 
     def win_rate(self, daily_df):
 
@@ -1503,15 +1503,12 @@ class backtest(ConnectDatabase):
 
     def calculate_trading_frequency(self):
         df = self.df
-        # 筛选roll_signal等于0的行
+
         filtered_df = df[df['roll_signal'] == 0]
 
-        # 筛选operation不等于0的交易
-        non_zero_operations = filtered_df[(filtered_df['operation'] !=0) & (filtered_df['roll_signal'] ==0)]
-
         # 计算总交易数和不同交易日的数目
-        total_trades = (non_zero_operations.shape[0])/2
-        total_days = filtered_df['date'].nunique()
+        total_trades = df['corrected_operation'].abs().sum() / 2
+        total_days = df['date'].nunique()
 
         # 计算交易频率，一天交易多少次
         trades_per_day = total_trades / total_days if total_days > 0 else 0
@@ -1712,21 +1709,21 @@ class backtest(ConnectDatabase):
         执行完整的回测流程，返回最终的df
         '''
         self.df = self.calculate_operation()
-        self.df.to_csv('111.csv')
+
         contract_df = self.determine_trade_contracts()
-        contract_df.to_csv('001.csv')
+
         self.df = self.process_trades(contract_df)
-        self.df.to_csv('112.csv')
+
         self.df = self.query_trade_prices()
-        self.df = self.add_snapshoot()
+        self.df = self.add_snapshot()
         self.df = self.add_settle_prc()
-        self.df.to_csv('113.csv')
+
         self.df = self.correct_trade()
-        self.df.to_csv('114.csv')
+
         self.df = self.fill_number()
         self.df = self.slippage()
         self.df = self.operation_type()
-        self.df.to_csv('115.csv')
+
         self.df = self.calculate_pnl_new()
 
         self.df = self.calculate_margin_and_free_capital()
@@ -1741,18 +1738,18 @@ class backtest(ConnectDatabase):
         net_value_df = self.net_value_table()
         drawdown_df = self.find_top_drawdowns()
         daily_df = self.get_daily_df()
-        ratio_df = self.calculate_ratios(daily_df)
+        ratio_df, sharpe = self.calculate_ratios(daily_df)
         win_df = self.win_rate(daily_df)
         frequency_df = self.calculate_trading_frequency()
         self.generate_html(self.df, drawdown_df, ratio_df, frequency_df, win_df)
         self.df = self.adjust_columns()
-        return self.df, net_value_df
+        return self.df, net_value_df, sharpe
 
 
 if __name__ == '__main__':
     signal_df = pd.read_csv('fb.csv')
     bt = backtest('FB', 1000000, 1, signal_df, factor_name='barra', output_path='')
-    df, net_value_df = bt.run_backtest()
+    df, net_value_df, sharpe = bt.run_backtest()
     # backtest.df = pd.read_csv(r"Z:\data\future\factor\momentum\reports\AG_barra_momentum_detail.csv")
     # drawdown_df = backtest.find_top_drawdowns(backtest.df)
     # backtest.generate_html()

@@ -45,6 +45,11 @@ def get_logger_quote_wash(name, debug=False):
 # 如果是.CZC，需要补全合约代码
 
 class DataProcessor:
+    '''
+    从公司数据库中读取quote数据清洗后落到组内数据库。按照['main_contract', 'second', 'third', 'nearby_contract']分类
+    输入：essentialcontract文件，包含四类合约。future_information.csv用于获取各品种开盘时间。
+    输出：按照日期落入main_contract, second, third, nearby_contract文件夹。文件夹地址：\\samba-1.quantchina.pro\quanyi4g\data\future\quote
+    '''
     def __init__(self, future_index, opening_hours_file='future_information.csv', debug=False):
         self.api_client = api_client
         self.future_index = future_index
@@ -58,9 +63,10 @@ class DataProcessor:
         # 保留特定的列
         # required_columns = ['symbol', 'date', 'time', 'datetime', 'last_prc',
         #                     'volume', 'turnover', 'ask_prc1', 'bid_prc1', 'trading_date', 'open_interest']
-        required_columns = ['datetime', 'date', 'time']
+        required_columns = ['datetime', 'date', 'time','trading_date']
         missing_columns = [col for col in required_columns if col not in day_quote.columns]
-
+        if 'last_prc' in day_quote.columns and 'open_interest' in day_quote.columns:
+            day_quote = day_quote[(day_quote['last_prc'] != 0) & (day_quote['open_interest'] != 0)]
         # if missing_columns:
         #     return None
 
@@ -68,14 +74,16 @@ class DataProcessor:
         day_quote['datetime'] = pd.to_datetime(day_quote['datetime'])
         if 'date' in missing_columns or 'time' in missing_columns:
             day_quote['datetime'] = pd.to_datetime(day_quote['datetime'])
+            # day_quote['trading_date'] = pd.to_datetime(day_quote['trading_date'])
             day_quote['time'] = day_quote['datetime'].dt.strftime('%H%M%S%f').str.slice(0, 9)
             day_quote['date'] = day_quote['datetime'].dt.strftime('%Y%m%d')
-
+            # day_quote['trading_date'] = day_quote['trading_date'].dt.strftime('%Y%m%d')
         contract_code = future_index
         # 根据contract_code找到对应的开盘时间
 
         contract_hours = self.opening_hours_df.loc[self.opening_hours_df['code'] == contract_code, 'hours'].values[0]
-
+        max_ms = 24*3600*1000
+        min_ms = 0
         # 过滤时间
         def time_to_ms(hour, minute, second, ms):
             return hour * 3600 * 1000 + minute * 60 * 1000 + second * 1000 + ms
@@ -97,15 +105,16 @@ class DataProcessor:
                 start_second, end_second = 0, 0  # 开始和结束时间的秒数默认为0
                 start_ms, end_ms = 0, 0
                 start_total_ms = time_to_ms(start_hour, start_minute, start_second, start_ms)
+                end_total_ms = time_to_ms(end_hour, end_minute, end_second, end_ms)
 
                 if end_hour < start_hour or (end_hour == start_hour and end_minute < start_minute):
-                    end_total_ms = time_to_ms(end_hour + 24, end_minute, end_second, end_ms)
-                else:
-                    end_total_ms = time_to_ms(end_hour, end_minute, end_second, end_ms)
 
-                # 判断交易时间是否在任何一个开盘时间段内
-                if start_total_ms <= trading_total_ms <= end_total_ms:
-                    return True
+                    if start_total_ms <= trading_total_ms <= max_ms or min_ms <= trading_ms <= end_total_ms:
+                        return True
+                else:
+
+                    if start_total_ms <= trading_total_ms <= end_total_ms:
+                        return True
 
             return False
 
@@ -118,13 +127,14 @@ class DataProcessor:
         data = data.copy()
         # data.loc[:, 'datetime'] = pd.to_datetime(data['datetime'])
         data['datetime'] = pd.to_datetime(data['datetime'])
-        # data.loc[:, 'date'] = data['datetime'].dt.date
+        data.loc[:, 'date'] = data['datetime'].dt.date
         data.loc[:, 'trading_date'] = pd.to_datetime(data['trading_date'], format='%Y%m%d')
         data['trading_date'] = pd.to_datetime(data['trading_date']).dt.date
         # data.to_csv('step1.csv')
         resampled_data = pd.DataFrame()
         # 循环处理每一个日期
         for date in data['trading_date'].unique():
+
             # print(type( data['trading_date'][1]))
             opening_hours_str = self.opening_hours_df.loc[self.opening_hours_df['code'] == contract_code, 'hours'].values[0]
             periods = opening_hours_str.split()
@@ -132,18 +142,27 @@ class DataProcessor:
             date_data = data[data['trading_date'] == date].copy()
             original_datetime = date_data['datetime'].copy()
             date_data['resample_time'] = original_datetime
-
+            first_date = date_data['date'].iloc[0]
             for period in periods:
                 start_time_str, end_time_str = period.split('-')
                 start_datetime = datetime.strptime(date.strftime('%Y-%m-%d') + start_time_str, '%Y-%m-%d%H:%M')
                 end_datetime = datetime.strptime(date.strftime('%Y-%m-%d') + end_time_str, '%Y-%m-%d%H:%M')
+                # start_datetime = datetime.strptime(f'{first_date} {start_time_str}','%Y-%m-%d%H:%M')
+                # end_datetime = datetime.strptime(f'{first_date} {end_time_str}', '%Y-%m-%d%H:%M')
 
-                if (20 <= start_datetime.hour < 24) or (20 <= end_datetime.hour < 24):
-                    start_datetime -= timedelta(days=1)
 
-
-                if 20 <= end_datetime.hour < 24:
-                    end_datetime -= timedelta(days=1)
+                if (20 <= start_datetime.hour < 24) and (20 <= end_datetime.hour < 24):
+                    if first_date == date:
+                        continue
+                    else:
+                        start_datetime = datetime.combine(first_date, start_datetime.time())
+                    end_datetime = datetime.combine(first_date, end_datetime.time())
+                elif (20 <= start_datetime.hour < 24) and (0 <= end_datetime.hour < 8):
+                    if first_date == date:
+                        continue
+                    else:
+                        start_datetime = datetime.combine(first_date, start_datetime.time())
+                        end_datetime = datetime.combine(first_date + timedelta(days=1), end_datetime.time())
 
                 date_data = date_data.drop_duplicates(subset=['resample_time'])
                 all_times = pd.date_range(start=start_datetime, end=end_datetime, freq=freq)
@@ -171,7 +190,7 @@ class DataProcessor:
             return resampled_quote
         return None
 
-def get_logger_snapshoot(name, debug=False):
+def get_logger_snapshot(name, debug=False):
     logger = logging.getLogger(name)
     if not logger.handlers:
         logger.setLevel(logging.DEBUG if debug else logging.INFO)
@@ -183,17 +202,13 @@ def get_logger_snapshoot(name, debug=False):
     return logger
 
 
-class get_snapshoot(ApiClient):
+class get_snapshot(ApiClient):
     def __init__(self, api_client, contract: str, time: str):
         self.api_client = api_client
         self.contract = contract
         self.time = time
         self.future_info = pd.read_csv('future_information.csv')
-        # 交易所日历
-        # self.calendar = pd.read_csv('calendar.csv').rename(
-        #     columns={'TRADE_DAYS': 'trade_days', 'S_INFO_EXCHMARKET': 'exchmarket'})
-        # self.calendar['trade_days'] = pd.to_datetime(self.calendar['trade_days'], format='%Y%m%d').dt.date
-        self.logger = get_logger_snapshoot(name="get_snapshoot", debug=False)
+        self.logger = get_logger_snapshot(name="get_snapshot", debug=False)
         # 期货开盘时间
         self.opening_hours_df = pd.read_csv('future_information.csv')
 
@@ -214,14 +229,16 @@ class get_snapshoot(ApiClient):
                 year = int(string_date)
                 # year = int(query_date[:4])
                 # 修正数字部分，在第一位加上年份
-                if len(numbers) == 3 and numbers[0] != '9':
-                    if year >= 2019:
-                        corrected_numbers = '2' + numbers
-                    else:
-                        corrected_numbers = '1' + numbers
+                if len(numbers) == 3 and numbers[0] != '9' and year >= 2019:
+                    corrected_numbers = '2' + numbers
+                elif len(numbers) == 3:
+                    corrected_numbers = '1' + numbers
                 else:
                     corrected_numbers = numbers
                 return f"{letters}{corrected_numbers}.CZC"
+        if contract.endswith('.GFE'):
+            corrected_contract = contract.replace('.GFE', '.GFEX')
+            return corrected_contract
         return contract
 
     def get_quote_data(self):
@@ -268,13 +285,15 @@ class get_snapshoot(ApiClient):
 
         # 保留特定的列
         required_columns = ['symbol', 'datetime', 'last_prc',
-                            'volume', 'turnover', 'ask_prc1', 'bid_prc1', 'trading_date', 'open_interest']
+                            'volume', 'turnover', 'ask_prc1','ask_vol1', 'bid_prc1', 'bid_vol1','trading_date', 'open_interest']
 
         missing_columns = [col for col in required_columns if col not in day_quote.columns]
 
         # 如果关键字段缺失，打日志+跳过
-        if any(col in ['symbol', 'datetime', 'volume', 'turnover', 'last_prc', 'ask_prc1', 'bid_prc1'] for col in
+        if any(col in ['symbol', 'datetime', 'volume', 'turnover', 'last_prc', 'ask_prc1', 'ask_vol1', 'bid_prc1',
+                       'bid_vol1'] for col in
                missing_columns):
+            print( f"数据字段有缺失 contract={self.contract}, trading_date={query_date}, 缺失字段={missing_columns}")
             self.logger.warning(
                 f"数据字段有缺失 contract={self.contract}, trading_date={query_date}, 缺失字段={missing_columns}")
             return None
@@ -287,9 +306,9 @@ class get_snapshoot(ApiClient):
 if __name__ == '__main__':
 
     maincontract_folder = "/nas92/temporary/Steiner/data_wash/linux_so/py311/essentialcontract/"
-    results_folder = "/nas92/data/future/"
+    results_folder = "/nas92/data/future/quote/"
 
-    api_client = ApiClient("zlt_read", "zlt_read", "./config/api.json", get_logger(name="ApiClientLog", debug=False))
+    api_client = ApiClient("zlt_research1", "zlt_research1", "./config/api.json", get_logger(name="ApiClientLog", debug=False))
     if not api_client.init():
         raise Exception("ApiClient Error")
 
@@ -299,7 +318,7 @@ if __name__ == '__main__':
         if file_name.endswith(".csv"):
             file_path = os.path.join(maincontract_folder, file_name)
             contracts_df = pd.read_csv(file_path)
-            # contracts_df =pd.read_csv("/nas92/temporary/Steiner/data_wash/linux_so/py311/essentialcontract/RU_20091201_20240710.csv")
+
             print(file_name)
 
         results = []
@@ -317,61 +336,25 @@ if __name__ == '__main__':
             contracts = ['main_contract', 'second', 'third', 'nearby_contract']
             for contract_type in contracts:
                 contract = row[contract_type]
-                snapshoot = get_snapshoot(api_client, contract, date)
-                day_quote = snapshoot.get_quote_data()
-                print(contract)
-                if day_quote is not None:
-                    processor = DataProcessor(future_index)
-                    cleaned_quote = processor.process(day_quote, future_index)
+                if isinstance(contract, str) and contract.strip():
+                    snapshot = get_snapshot(api_client, contract, date)
+                    day_quote = snapshot.get_quote_data()
+                    print(contract)
+                    if day_quote is not None:
+                        processor = DataProcessor(future_index)
+                        cleaned_quote = processor.process(day_quote, future_index)
 
-                    date_folder = os.path.join(results_folder,
-                                               datetime.strptime(date, '%Y-%m-%d').strftime('%Y%m%d'))
-                    if not os.path.exists(date_folder):
-                        os.makedirs(date_folder)
+                        date_folder = os.path.join(results_folder,
+                                                   datetime.strptime(date, '%Y-%m-%d').strftime('%Y%m%d'))
+                        if not os.path.exists(date_folder):
+                            os.makedirs(date_folder)
 
-                    contract_folder = os.path.join(date_folder, contract_type)
-                    if not os.path.exists(contract_folder):
-                        os.makedirs(contract_folder)
+                        contract_folder = os.path.join(date_folder, contract_type)
+                        if not os.path.exists(contract_folder):
+                            os.makedirs(contract_folder)
 
 
-                output_file = os.path.join(contract_folder, f"{contract}_{datetime.strptime(date, '%Y-%m-%d').strftime('%Y%m%d')}.csv")
-                cleaned_quote.to_csv(output_file, index=False)
+                    output_file = os.path.join(contract_folder, f"{contract}_{datetime.strptime(date, '%Y-%m-%d').strftime('%Y%m%d')}.parquet")
+                    cleaned_quote.to_parquet(output_file, index=False)
 
-            # exchange_rows['trade_days'] = pd.to_datetime(exchange_rows['trade_days'], format='%Y%m%d')
-            # exchange_rows = exchange_rows.sort_values(by='trade_days')
-            #
-            #
-            # day_quote = get_quote_data(api_client, contract, " ")
-            #
-            # # day_quote = pd.read_csv('RU2005.SHF.csv')
-            # future_index = 'RU'
-            # processor = DataProcessor(future_index)
-            # cleaned_quote = processor.process(day_quote, future_index)
-            # cleaned_quote.to_csv("check.csv")
-            # #
-            # #
-            #     # 对每个日期时间进行查询
-            #     for query_time in date_time_list:
-            #         print(query_time)
-            #         snapshoot.time = query_time
-            #         quote_data = snapshoot.get_quote_data()
-            #         # print(quote_data)
-            #         if quote_data is None:
-            #             continue
-            #
-            #         result = snapshoot.certain_snapshoot(quote_data, query_time)
-            #
-            #         results.append(result)
-            #         query_counter += 1
-            #         if query_counter % 100 == 0:
-            #             if results:
-            #                 combined_results = pd.concat(results, ignore_index=True)
-            #                 sorted_results = combined_results.sort_values(by=['query_time']).reset_index(drop=True)
-            #                 output_file = os.path.join(results_folder, f"{os.path.splitext(file_name)[0]}_results.csv")
-            #                 sorted_results.to_csv(output_file, index=False)
-            # if results:
-            #     combined_results = pd.concat(results, ignore_index=True)
-            #     sorted_results = combined_results.sort_values(by=['query_time']).reset_index(drop=True)
-            #     output_file = os.path.join(results_folder, f"{os.path.splitext(file_name)[0]}_results.csv")
-            #     sorted_results.to_csv(output_file, index=False)
-    #
+
