@@ -15,7 +15,7 @@ from quote_wash_revised import DataProcessor
 
 warnings.filterwarnings('ignore')
 pd.set_option('display.max_columns', None)
-def get_logger_snapshoot(name, debug=False):
+def get_logger_snapshot(name, debug=False):
     """
     初始化一个日志记录器。
 
@@ -38,7 +38,7 @@ def get_logger_snapshoot(name, debug=False):
 class get_wap(ApiClient):
     def __init__(self, api_client, contract: str, time: str):
         """
-       初始化get_snapshoot类。
+       初始化get_snapshot类。
 
        参数:
        - contract (str): 期货品种索引。
@@ -53,7 +53,7 @@ class get_wap(ApiClient):
         self.calendar = pd.read_csv('calendar.csv').rename(
             columns={'TRADE_DAYS': 'trade_days', 'S_INFO_EXCHMARKET': 'exchmarket'})
         self.calendar['trade_days'] = pd.to_datetime(self.calendar['trade_days'], format='%Y%m%d').dt.date
-        self.logger = get_logger_snapshoot(name="get_wap", debug=False)
+        self.logger = get_logger_snapshot(name="get_wap", debug=False)
         # 期货开盘时间
         self.opening_hours_df = pd.read_csv('future_information.csv')
 
@@ -63,7 +63,6 @@ class get_wap(ApiClient):
         return match.group(1) if match else contract
 
     def correct_czc_code(self, contract, query_date):
-
         if contract.endswith('.CZC'):
             # 提取期货代码中的字母和数字部分
             match = re.match(r'^([A-Z]+)(\d+)\.CZC$', contract)
@@ -74,15 +73,18 @@ class get_wap(ApiClient):
                 year = int(string_date)
                 # year = int(query_date[:4])
                 # 修正数字部分，在第一位加上年份
-                if len(numbers) == 3  and numbers[0] != '9':
-                    if year >= 2019 :
-                        corrected_numbers = '2' + numbers
-                    else:
-                        corrected_numbers = '1' + numbers
+                if len(numbers) == 3 and numbers[0] != '9' and year >= 2019:
+                    corrected_numbers = '2' + numbers
+                elif len(numbers) == 3:
+                    corrected_numbers = '1' + numbers
                 else:
                     corrected_numbers = numbers
                 return f"{letters}{corrected_numbers}.CZC"
+        if contract.endswith('.GFE'):
+            corrected_contract = contract.replace('.GFE', '.GFEX')
+            return corrected_contract
         return contract
+
 
     def get_quote_data(self):
 
@@ -177,12 +179,8 @@ class get_wap(ApiClient):
 
         :return: 包含 TWAP 和 VWAP 的 DataFrame
         """
-        # print(day_quote)
-        # print(date)
-        # print(start_time)
+
         result = pd.DataFrame(columns=['contract', 'date', 'start_time'])
-        #
-        # start_datetime = datetime.strptime(start_datetime_str, '%Y-%m-%d %H:%M:%S')
         start_datetime = start_datetime_str
         date = start_datetime.strftime('%Y-%m-%d')
 
@@ -214,10 +212,6 @@ class get_wap(ApiClient):
             if milliseconds > 0 and ( seconds > 0 or minutes > 0 or hours > 0):
                 length_desc_parts.append(f"{milliseconds}f")
             length_desc = ''.join(length_desc_parts)
-            # length_desc = f"{hours}h{minutes}m{seconds}s{milliseconds}f"
-
-
-            # current_date = start_date
 
             if is_backward:
                 end_datetime = start_datetime - length_delta
@@ -249,12 +243,6 @@ class get_wap(ApiClient):
                 else:
                     vwap = df_period['middle_price'].iloc[0]
 
-                    # 创建临时行并且添加结果
-                # temp_row = pd.Series({'date': date,
-                #                       'start_time': start_datetime.strftime('%H%M%S%f'),
-                #                       'datetime': start_datetime,
-                #                       f'{length_desc}_twap_{"pre_" if is_backward else "post_"}prc': twap,
-                #                       f'{length_desc}_vwap_{"pre_" if is_backward else "post_"}prc': vwap})
                 result.at[0, 'contract'] = contract
                 result.at[0, 'date'] = date
                 result.at[0, 'start_time'] = str(start_datetime)
@@ -269,13 +257,7 @@ class get_wap(ApiClient):
 
 if __name__ == '__main__':
 
-    # day_quote = pd.read_csv('check2.csv')
-    # # date = '2013-11-22'
-    # start_day_time = '2013-11-22 14:30:00'
-    # lengths = ['-00:01:00:000', '-00:03:00:000', '-00:05:00:000', '00:01:00:000', '00:03:00:000', '00:05:00:000']
-    # result = get_wap.wap(day_quote, start_day_time,*lengths)
-    # print(result)
-    # result.to_csv('wap.csv')
+
     maincontract_folder = "/nas92/temporary/Steiner/data_wash/linux_so/py311/maincontract2/"
     results_folder = "/nas92/temporary/Steiner/data_wash/linux_so/py311/wap_results/"
 
@@ -328,14 +310,14 @@ if __name__ == '__main__':
                 date_time_list.append(pd.to_datetime(str(trade_day)).strftime('%Y-%m-%d') + ' 14:30:00')
                 date_time_list.append(pd.to_datetime(str(trade_day)).strftime('%Y-%m-%d') + ' 22:30:00')
 
-            snapshoot = get_wap(api_client,  contract, " ")
+            snapshot = get_wap(api_client,  contract, " ")
 
             # 对每个日期时间进行查询
             for query_time in date_time_list:
                 print(query_time)
 
-                snapshoot.time = query_time
-                quote_data = snapshoot.get_quote_data()
+                snapshot.time = query_time
+                quote_data = snapshot.get_quote_data()
                 # print(quote_data)
                 if quote_data is None:
                     continue
