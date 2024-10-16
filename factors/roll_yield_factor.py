@@ -3,7 +3,7 @@
 
 # 因子值：用前收计算
 # 分daily和daynight
-# 主力合约snapshoot，近月合约snapshoot，prev_close
+# 主力合约snapshot，近月合约snapshot，prev_close
 
 import os
 import glob
@@ -38,18 +38,6 @@ def correct_czc_code(contract, query_date):
 
 
 def roll_yield_daynight(symbol: str, source_folder1: str, source_folder2: str, output_folder: str):
-    '''
-    计算 daynight 数据的滚动收益率并保存到 CSV 文件。
-
-    参数:
-    symbol (str): 合约符号。
-    source_folder1 (str): 存储 nearby 数据的文件夹路径。
-    source_folder2 (str): 存储 main 数据的文件夹路径。
-    output_folder (str): 保存输出文件的文件夹路径。
-
-    输出:
-    str: 如果找不到对应的 CSV 文件，返回错误信息，否则返回 None，数据保存在输出文件中。
-    '''
     # 第一步：读取 nearby 文件
     file_found = False
     for filename in os.listdir(source_folder1):
@@ -123,17 +111,6 @@ def roll_yield_daynight(symbol: str, source_folder1: str, source_folder2: str, o
     print(f"Roll yield daynight data saved to {output_file}")
 
 def roll_yield_daily(symbol: str, source_folder1: str,  output_folder: str):
-    '''
-    计算 daily 数据的滚动收益率并保存到 CSV 文件。
-
-    参数:
-    symbol (str): 合约符号。
-    source_folder1 (str): 存储 nearby 数据的文件夹路径。
-    output_folder (str): 保存输出文件的文件夹路径。
-
-    输出:
-    str: 如果找不到对应的 CSV 文件，返回错误信息，否则返回 None，数据保存在输出文件中。
-    '''
     file_found = False
     for filename in os.listdir(source_folder1):
         if filename.startswith(f"{symbol}_") and filename.endswith('.csv'):
@@ -170,15 +147,6 @@ def roll_yield_daily(symbol: str, source_folder1: str,  output_folder: str):
                       on=['TRADE_DT'], how='left')
 
     def calculate_roll_yield(row):
-        '''
-        计算 daily 滚动收益率。
-
-        参数:
-        row (pd.Series): 包含合约日期差、nearby 和 far 的前一日收盘价。
-
-        输出:
-        float: 滚动收益率，若发生错误或日期差为 0，返回 0 或 NaN。
-        '''
         if row['days_diff'] == 0:
             return 0  # 当 days_diff 为 0 时，返回 0
         try:
@@ -204,9 +172,6 @@ def roll_yield_daily(symbol: str, source_folder1: str,  output_folder: str):
     result.to_csv(output_file, index=False)
 # 辅助函数：提取 contract 列中的 yymm 并生成该月份的最后一天
 def get_end_date(contract: str) -> str:
-    '''
-    计算合约的到期日，默认为到期月份的最后一天
-    '''
     match = re.search(r'(\d{4})', contract)
     if match:
         yymm = match.group(1)
@@ -221,7 +186,7 @@ def get_end_date(contract: str) -> str:
 if __name__ == '__main__':
 
     source_folder1 = r"\\samba-1.quantchina.pro\quanyi4g\data\future\trade_buffer\buffer_day_nearby"
-    source_folder2 = r"\\samba-1.quantchina.pro\quanyi4g\temporary\Steiner\data_wash\linux_so\py311\snapshoot_results_oi"
+    source_folder2 = r"\\samba-1.quantchina.pro\quanyi4g\temporary\Steiner\data_wash\linux_so\py311\snapshot_results_oi"
     output_folder = r"\\samba-1.quantchina.pro\quanyi4g\data\future\factor\term_structure\roll_yield_daynight"
     output_folder2 = r"\\samba-1.quantchina.pro\quanyi4g\data\future\factor\roll_yield\roll_yield_daily"
     daily_source_folder1 = r'\\samba-1.quantchina.pro\quanyi4g\data\future\daybar'

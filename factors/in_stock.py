@@ -12,19 +12,6 @@ import math
 
 # 读取 in_stock.csv 文件
 def combine_symbol():
-    """
-    合并 in_stock.csv 和 合约信息大全.csv 文件，根据 FS_INFO_SCNAME 和 S_INFO_NAME 字段进行匹配，
-    将合约代码 (S_INFO_CODE) 添加到 in_stock.csv 中。
-
-    功能：
-    - 读取 in_stock.csv 文件，该文件包含在库的股票信息。
-    - 读取 合约信息大全.csv 文件，该文件包含所有合约的详细信息。
-    - 根据 FS_INFO_SCNAME 和 S_INFO_NAME 进行匹配，提取合约代码 (S_INFO_CODE)，并合并到 in_stock.csv 中。
-    - 将合并后的结果保存为新的 CSV 文件 'in_stock_with_symbol.csv'。
-
-    输出：
-    - 保存合并后的 CSV 文件，文件名为 'in_stock_with_symbol.csv'。
-    """
     in_stock_df = pd.read_csv('in_stock.csv')
     #
     # 读取 合约信息大全.csv 文件
@@ -41,22 +28,6 @@ def combine_symbol():
     merged_df.to_csv('in_stock_with_symbol.csv', index=False)
 
 def in_stock_daily(symbol,output_folder, N):
-    """
-    计算指定 symbol 股票的日频库存因子值。
-
-    参数：
-    - symbol (str): 交易品种代码。
-    - output_folder (str): 输出文件夹路径，用于保存结果。
-    - N (int): 用于计算因子回溯的天数。
-
-    功能：
-    从合并后的 in_stock_with_symbol.csv 文件中读取数据，基于指定的 symbol 进行筛选，计算每日的库存因子。
-    库存因子的计算公式为：T-1 天的 IN_STOCK 值除以 T-(N+1) 天的 IN_STOCK 值，减 1。
-    最终结果保存为 CSV 文件。
-
-    输出：
-    生成以 '{symbol}_{N}days_in_stock_daily.csv' 命名的文件，包含 'trading_date' 和计算得到的库存因子值。
-    """
     merged_df = pd.read_csv('in_stock_with_symbol.csv')
     merged_df['ANN_DATE'] = pd.to_datetime(merged_df['ANN_DATE'], format='%Y%m%d')
     all_dates = pd.Series(pd.to_datetime(merged_df['ANN_DATE'].unique())).sort_values()
@@ -81,6 +52,8 @@ def in_stock_daily(symbol,output_folder, N):
     # print(symbol_df)
     symbol_df.rename(columns={'index':'trading_date'},inplace=True)
     output_df = symbol_df[['trading_date', f'{N}days_in_stock_daily']]
+
+
 
     output_file = f"{symbol}_{N}days_in_stock_daily.csv"
     output_path = os.path.join(output_folder, output_file)
