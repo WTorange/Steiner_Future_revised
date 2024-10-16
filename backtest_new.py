@@ -79,7 +79,9 @@ def correct_czc_code(contract, trading_date):
             else:
                 corrected_numbers = numbers
             return f"{letters}{corrected_numbers}.CZC"
-
+    if contract.endswith('.GFE'):
+        corrected_contract = contract.replace('.GFE', '.GFEX')
+        return corrected_contract
     return contract
 class backtest(ConnectDatabase):
     def __init__(self, symbol: str, initial_capital: int, leverage: float, signal_df, factor_name, output_path,
